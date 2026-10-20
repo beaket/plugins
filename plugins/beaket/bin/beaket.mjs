@@ -2,9 +2,12 @@
 // Beaket team records: share decision records with your team, end-to-end encrypted.
 // Beaket keeps them as ciphertext and never receives the key.
 //
-//   node beaket.mjs team create [--server URL]   make a team and print its join code
-//   node beaket.mjs team join <code>             join a team with a code from a teammate
-//   node beaket.mjs team show                    print this team's join code, to invite someone
+//   node beaket.mjs team create [--server URL]   make a team; its join code goes to the clipboard and a private file
+//   node beaket.mjs team join [--file F | code]  join a team with a code from a teammate, read from the clipboard by default
+//   node beaket.mjs team show [--print]          put this team's join code on the clipboard again, to invite someone
+//
+// The join code holds the team's key. It never goes to standard output unless you ask with --print,
+// so that it stays out of an AI assistant's conversation, which is sent to its model.
 //   node beaket.mjs status                       is this machine in a team, and where are its records
 //   node beaket.mjs paths                        the config, cache and private folders of this machine
 //   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private)
@@ -15,6 +18,7 @@
 //   node beaket.mjs session-start                for the SessionStart hook: pull, then print the index
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +29,7 @@ const INDEX_SIZE = 30;
 const CONFIG_DIR = process.env.BEAKET_CONFIG_DIR ?? join(homedir(), ".config", "beaket");
 const CONFIG = join(CONFIG_DIR, "team.json");
 const CACHE_ROOT = process.env.BEAKET_CACHE_DIR ?? join(homedir(), ".cache", "beaket", "teams");
+const JOIN_FILE = join(CONFIG_DIR, "join-code");
 // Records the person keeps to themselves, outside any repository.
 const PRIVATE_DIR = join(CONFIG_DIR, "private");
 const ID_LINE = /^<!-- beaket-record: ([0-9a-f-]{36}) -->\n/;
@@ -60,6 +65,36 @@ function writeConfig(config) {
 
 const joinCode = (c) => "bkt1." + b64url(enc.encode(JSON.stringify({ server: c.server, team: c.team, secret: c.secret })));
 const cacheDir = (c) => join(CACHE_ROOT, c.team);
+
+const CLIPBOARD = {
+  darwin: { copy: ["pbcopy"], paste: ["pbpaste"] },
+  win32: { copy: ["clip"], paste: ["powershell", "-NoProfile", "-Command", "Get-Clipboard"] },
+  linux: process.env.WAYLAND_DISPLAY ? { copy: ["wl-copy"], paste: ["wl-paste", "-n"] } : { copy: ["xclip", "-selection", "clipboard"], paste: ["xclip", "-selection", "clipboard", "-o"] },
+}[process.platform];
+
+function toClipboard(text) {
+  if (!CLIPBOARD || process.env.BEAKET_NO_CLIPBOARD) return false;
+  const [bin, ...args] = CLIPBOARD.copy;
+  return spawnSync(bin, args, { input: text }).status === 0;
+}
+
+function fromClipboard() {
+  if (!CLIPBOARD || process.env.BEAKET_NO_CLIPBOARD) return "";
+  const [bin, ...args] = CLIPBOARD.paste;
+  const r = spawnSync(bin, args, { encoding: "utf8" });
+  return r.status === 0 ? r.stdout.trim() : "";
+}
+
+// Keep the join code in a file only its owner can read, and on the clipboard; print it only on request.
+function handOut(config, print) {
+  const code = joinCode(config);
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(JOIN_FILE, code + "\n", { mode: 0o600 });
+  chmodSync(JOIN_FILE, 0o600);
+  if (print) return code;
+  const copied = toClipboard(code);
+  return `The join code is ${copied ? "on your clipboard and " : ""}in ${JOIN_FILE} (readable only by you). Paste it to each teammate in a private message; whoever holds it can read every record of the team. Do not paste it into an AI assistant: they join with \`team join\`, which reads it from their clipboard.`;
+}
 
 // A Cloudflare Access service token, when the server sits behind one.
 function accessHeaders() {
@@ -198,17 +233,18 @@ try {
     const { team } = await response.json();
     const config = { server, team, secret, cursor: 0 };
     writeConfig(config);
-    console.log(`Made a team. Give this join code to your teammates, privately; anyone with it can read the team's records:\n\n${joinCode(config)}\n`);
+    console.log(`Made a team at ${server}. ${handOut(config, rest.includes("--print"))}`);
   } else if (cmd === "team" && sub === "join") {
-    const code = rest[0];
-    if (!code?.startsWith("bkt1.")) throw new Error("A join code starts with bkt1.");
+    const at = rest.indexOf("--file");
+    const code = (at >= 0 ? readFileSync(rest[at + 1], "utf8") : rest[0] ?? fromClipboard()).trim();
+    if (!code.startsWith("bkt1.")) throw new Error("No join code found: copy the code your teammate sent (it starts with bkt1.) and run this again, or pass --file <file holding it>.");
     const { server, team, secret } = JSON.parse(dec.decode(Buffer.from(code.slice(5), "base64url")));
     const existing = readConfig();
     if (existing && existing.team !== team) throw new Error(`This machine is already in another team (${CONFIG}). Remove that file first to join this one.`);
     const { changed, dir } = await pull({ server, team, secret, cursor: existing?.cursor ?? 0 });
-    console.log(`Joined the team. ${changed} record(s) in ${dir}.`);
+    console.log(`Joined the team at ${server}. ${changed} change(s) pulled; the records are in ${dir}.`);
   } else if (cmd === "team" && sub === "show") {
-    console.log(joinCode(needTeam()));
+    console.log(handOut(needTeam(), rest.includes("--print")));
   } else if (cmd === "status") {
     const config = needTeam();
     console.log(`Team ${config.team} at ${config.server}. Records: ${cacheDir(config)}. Script: ${self}`);
@@ -265,7 +301,7 @@ try {
       [
         `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
         ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}`),
-        "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. When you tell someone about a record, give its file path, the decision, the reason in the decider's words and who they talked with, and its source links.",
+        "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. When a request goes against a record, say so in a few lines before doing anything: the record's title and path, the decision, and the reason in the decider's words with who they talked with, with the record's source links; then ask. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
         `To share a new record: node ${self} push <file>.`,
       ].join("\n"),
     );

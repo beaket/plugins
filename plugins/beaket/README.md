@@ -14,7 +14,8 @@ Cut the context of one decision down to what it needs, keep the decision as a re
   - `seal`: the file name and text are encrypted with that key and a random nonce, bound to the team and record id.
   - `call`: Beaket receives the access token, the nonce and the ciphertext. When the team is made, it receives only the SHA-256 of the token.
 - **What Beaket sees:** the team's id, each record's random id, its size, when it changed and the order of changes, and, like any web server, the IP address of each call. Not titles, text, file names, the secret or the key, and no name or account.
-- **On your machine:** the join code's secret in `~/.config/beaket/team.json` (readable only by you), decrypted records as plain files in `~/.cache/beaket/teams/<team>/`, and private records in `~/.config/beaket/private/`.
+- **The join code** holds the key. The script puts it on your clipboard and in `~/.config/beaket/join-code`, and never prints it unless you ask with `--print`, so it stays out of your AI assistant's conversation, which is sent to its model. Teammates copy it and ask Claude to join; `team join` reads it from the clipboard.
+- **On your machine:** the secret in `~/.config/beaket/team.json` (readable only by you), decrypted records as plain files in `~/.cache/beaket/teams/<team>/`, and private records in `~/.config/beaket/private/`.
 - **Who can read:** whoever has the join code. Pass it privately. A member cannot be removed; make a new team and give the rest a new code.
 - **Private records** carry `<!-- beaket-private -->` and `push` refuses them.
 
