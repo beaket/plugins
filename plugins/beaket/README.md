@@ -11,3 +11,5 @@ claude --plugin-dir ./plugins/beaket
 Then: `We need to decide whether the order event pipeline goes to Kafka (MSK) or to SQS/SNS with EventBridge. Give me only what the decision needs.`
 
 Connect Slack, Atlassian, Notion and Google Drive in Claude Code first (`/mcp`); a source with no connection is listed under "Could not search".
+
+Team records: `node bin/beaket.mjs team create` prints a join code for your teammates (`team join <code>`). Confirmed records are then encrypted on your machine and shared through Beaket, which cannot read them; every brief and session of a member reads them first.

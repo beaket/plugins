@@ -9,7 +9,7 @@ What decides a decision is often never written down: a talk with someone, a tabl
 
 ## Rules
 - The reason is the person's. Never invent a reason or a person. Take the reason only from what the person said, and the options, trade-offs and links only from the brief or the sources in this conversation.
-- Write only inside the decisions folder. Never write, post or comment anywhere else, and send nothing anywhere.
+- Write only inside the decisions folder. Never write, post or comment anywhere else. Send the record nowhere but to the person's Beaket team, encrypted by the plugin, and only after they confirm.
 - Write the record, its headings included, in the language the person wrote in.
 
 ## Steps
@@ -44,6 +44,7 @@ What decides a decision is often never written down: a talk with someone, a tabl
 ```
 
 Under Why and Talked with, write only what the person said. Under Rejected, Still open and Sources, write only what the brief or the sources hold, with their links.
-4. **Confirm.** Show the draft and ask whether to keep it. Change what they correct.
+4. **Confirm.** Check whether the person is in a Beaket team: `node <plugin>/bin/beaket.mjs status` (the plugin folder is two levels above this skill's base directory) exits 0 when they are. Show the draft and ask whether to keep it, and, if they are in a team, to share it with the team in the same answer. Change what they correct.
 5. **Write** it to `decisions/<YYYY-MM-DD>-<short-slug>.md` at the root of the current git repository (or of the current folder outside one), or to the folder the person named. If a record of the same decision is there, update it and note the change under a `## Changes` heading with the date, instead of writing a second file.
-6. Say where it was written, and that committing it shares it with the team and lets the next decision brief find it.
+6. If they are in a team and agreed to share, run `node <plugin>/bin/beaket.mjs push <file>`. It encrypts the record on this machine; Beaket keeps it but cannot read it, and every member's next brief and session reads it.
+7. Say where it was written and whether it was shared. If they are in no team, say in one line that `node <plugin>/bin/beaket.mjs team create` shares records with their team, end-to-end encrypted.

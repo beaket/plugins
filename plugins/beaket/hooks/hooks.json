@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/beaket.mjs\" session-start", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
