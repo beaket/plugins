@@ -14,7 +14,7 @@ What decides a decision is often never written down: a talk with someone, a tabl
 
 ## Steps
 1. **What you have.** The decision brief in this conversation, if there is one, and what the person just said.
-2. **Ask once, only for what is missing.** The record needs: the option chosen, why in the person's words, and who they talked with or who decided. If any of these is missing, ask for all the missing ones in one short question. Do not ask for anything else.
+2. **Ask once, only for what is missing.** The record needs: the option chosen, why in the person's words, and who they talked with. The decider is the person unless they name someone else; do not ask for it. If the choice, the reason or the people are missing, ask for all the missing ones in one short question, and never ask again for what they already said. Do not ask for anything else.
 3. **Draft**, leaving out a section with nothing in it:
 
 ```
@@ -43,8 +43,9 @@ What decides a decision is often never written down: a talk with someone, a tabl
 - <the documents and threads the decision leans on> [link]
 ```
 
-Under Why and Talked with, write only what the person said. Under Rejected, Still open and Sources, write only what the brief or the sources hold, with their links.
+Under Why and Talked with, write only what the person said. Under Rejected, Still open and Sources, write only what the brief or the sources hold, with their links. Still open holds questions about the decision itself, never gaps of your tools (an issue that would not open, a search that failed). A number or fact the person gave stays theirs: write it under Why without a link, and never put a source link next to it that does not hold it.
 4. **Confirm.** Check whether the person is in a Beaket team: `node <plugin>/bin/beaket.mjs status` (the plugin folder is two levels above this skill's base directory) exits 0 when they are. Show the draft and ask whether to keep it, and, if they are in a team, to share it with the team in the same answer. Change what they correct.
+   If the person wants it kept from the team (a staffing call, something personal, "only I should know"), it is private: never share it, and do not write it into the repository, where a commit would share it. Ask in one line whether to keep it at all; if they do, write it to the private folder that `node <plugin>/bin/beaket.mjs paths` names, with `<!-- beaket-private -->` as its first line, and say where it is.
 5. **Write** it to `decisions/<YYYY-MM-DD>-<short-slug>.md` at the root of the current git repository (or of the current folder outside one), or to the folder the person named. If a record of the same decision is there, update it and note the change under a `## Changes` heading with the date, instead of writing a second file.
 6. If they are in a team and agreed to share, run `node <plugin>/bin/beaket.mjs push <file>`. It encrypts the record on this machine; Beaket keeps it but cannot read it, and every member's next brief and session reads it.
-7. Say where it was written and whether it was shared. If they are in no team, say in one line that `node <plugin>/bin/beaket.mjs team create` shares records with their team, end-to-end encrypted.
+7. Say where it was written and whether it was shared. If they are in no team, say in one line that they can ask to make a Beaket team to share records with teammates, end-to-end encrypted.

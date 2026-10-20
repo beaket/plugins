@@ -6,7 +6,9 @@
 //   node beaket.mjs team join <code>             join a team with a code from a teammate
 //   node beaket.mjs team show                    print this team's join code, to invite someone
 //   node beaket.mjs status                       is this machine in a team, and where are its records
-//   node beaket.mjs push <file>...               encrypt and share decision records
+//   node beaket.mjs paths                        the config, cache and private folders of this machine
+//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private)
+//   node beaket.mjs unshared [folder]            list the records in decisions/ not yet shared, and the private ones
 //   node beaket.mjs remove <file>                withdraw a shared record
 //   node beaket.mjs pull                         fetch and decrypt the team's records
 //   node beaket.mjs index                        list the team's newest records
@@ -23,7 +25,11 @@ const INDEX_SIZE = 30;
 const CONFIG_DIR = process.env.BEAKET_CONFIG_DIR ?? join(homedir(), ".config", "beaket");
 const CONFIG = join(CONFIG_DIR, "team.json");
 const CACHE_ROOT = process.env.BEAKET_CACHE_DIR ?? join(homedir(), ".cache", "beaket", "teams");
+// Records the person keeps to themselves, outside any repository.
+const PRIVATE_DIR = join(CONFIG_DIR, "private");
 const ID_LINE = /^<!-- beaket-record: ([0-9a-f-]{36}) -->\n/;
+// A record the person keeps to themselves; push refuses it.
+const PRIVATE = /^<!-- beaket-private -->$/m;
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -107,6 +113,7 @@ function needTeam() {
 // The record's id lives in its first line, so that every member pushes to the same record.
 function recordId(file) {
   const text = readFileSync(file, "utf8");
+  if (PRIVATE.test(text)) throw new Error(`${file} is marked private (<!-- beaket-private -->), so it is not shared.`);
   const found = ID_LINE.exec(text);
   if (found) return { id: found[1], text };
   const id = crypto.randomUUID();
@@ -213,6 +220,18 @@ try {
       console.log(`Shared ${file} (record ${id}, change ${seq}).`);
     }
     await pull(config);
+  } else if (cmd === "paths") {
+    console.log(`config: ${CONFIG}\ncache: ${CACHE_ROOT}\nprivate: ${PRIVATE_DIR}`);
+  } else if (cmd === "unshared") {
+    const dir = sub ?? join(process.cwd(), "decisions");
+    const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".md")).sort() : [];
+    if (files.length === 0) console.log(`No records in ${dir}.`);
+    for (const f of files) {
+      const text = readFileSync(join(dir, f), "utf8");
+      const title = /^# (.+)$/m.exec(text)?.[1] ?? f;
+      const state = PRIVATE.test(text) ? "private" : ID_LINE.test(text) ? "shared" : "not shared";
+      console.log(`- ${state}: ${join(dir, f)} — ${title}`);
+    }
   } else if (cmd === "remove") {
     const config = needTeam();
     const found = ID_LINE.exec(readFileSync(sub, "utf8"));
@@ -246,12 +265,13 @@ try {
       [
         `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
         ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}`),
-        "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change.",
+        "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. When you tell someone about a record, give its file path, the decision, the reason in the decider's words and who they talked with, and its source links.",
         `To share a new record: node ${self} push <file>.`,
       ].join("\n"),
     );
   } else {
-    console.log(readFileSync(self, "utf8").split("\n").slice(1, 14).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+    const lines = readFileSync(self, "utf8").split("\n").slice(1);
+    console.log(lines.slice(0, lines.findIndex((l) => !l.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
   }
 } catch (error) {
   console.error(error.message);
