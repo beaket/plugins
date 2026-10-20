@@ -1,6 +1,6 @@
 {
   "name": "beaket",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Cut the context of one decision down to what it needs, from Slack, Jira, Confluence, Notion, Google Meet notes and GitHub read on your machine with your own access, and keep the decision as a record your team can find later.",
   "author": { "name": "Beaket" }
 }

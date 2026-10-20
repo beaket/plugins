@@ -16,7 +16,8 @@ Cut the context of one decision down to what it needs, keep the decision as a re
 - **What Beaket sees:** the team's id, each record's random id, its size, when it changed and the order of changes, and, like any web server, the IP address of each call. Not titles, text, file names, the secret or the key, and no name or account.
 - **The join code** holds the key. The script puts it on your clipboard and in `~/.config/beaket/join-code`, and never prints it unless you ask with `--print`, so it stays out of your AI assistant's conversation, which is sent to its model. Teammates copy it and ask Claude to join; `team join` reads it from the clipboard.
 - **On your machine:** the secret in `~/.config/beaket/team.json` (readable only by you), decrypted records as plain files in `~/.cache/beaket/teams/<team>/`, and private records in `~/.config/beaket/private/`.
-- **Who can read:** whoever has the join code. Pass it privately. A member cannot be removed; make a new team and give the rest a new code.
+- **Who can read:** whoever has the join code. Pass it privately. To remove someone, `team rotate` moves every record to a new team with a new key and code and empties the old one; give the new code only to those who stay. Whoever pulled before keeps their copies.
+- **You do not have to trust Beaket's server** for confidentiality: it never receives the key. Beaket keeps no list of members and no log of who read what, because it knows no one.
 - **Private records** carry `<!-- beaket-private -->` and `push` refuses them.
 
 This script is the whole client: what leaves your machine for Beaket is what it sends, and you can read it.

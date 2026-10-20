@@ -4,6 +4,7 @@
 //
 //   node beaket.mjs team create [--server URL]   make a team; its join code goes to the clipboard and a private file
 //   node beaket.mjs team join [--file F | code]  join a team with a code from a teammate, read from the clipboard by default
+//   node beaket.mjs team rotate                  remove members: move every record to a new team with a new key and code
 //   node beaket.mjs team show [--print]          put this team's join code on the clipboard again, to invite someone
 //
 // The join code holds the team's key. It never goes to standard output unless you ask with --print,
@@ -212,6 +213,21 @@ function index(config) {
     .slice(0, INDEX_SIZE);
 }
 
+async function makeTeam(server) {
+  const secret = b64(crypto.getRandomValues(new Uint8Array(32)));
+  const { token } = await derive(secret);
+  const accessHash = createHash("sha256").update(token).digest("hex");
+  const response = await fetch(`${server}/api/teams`, {
+    method: "POST",
+    redirect: "manual",
+    headers: { ...accessHeaders(), "content-type": "application/json" },
+    body: JSON.stringify({ accessHash }),
+  });
+  if (response.status !== 201) throw new Error(`Beaket answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  const { team } = await response.json();
+  return { server, team, secret, cursor: 0 };
+}
+
 const [cmd, sub, ...rest] = process.argv.slice(2);
 const self = fileURLToPath(import.meta.url);
 
@@ -220,18 +236,7 @@ try {
     if (readConfig()) throw new Error(`This machine is already in a team (${CONFIG}). Remove that file first to make another.`);
     const at = rest.indexOf("--server");
     const server = (at >= 0 ? rest[at + 1] : process.env.BEAKET_URL ?? DEFAULT_SERVER).replace(/\/+$/, "");
-    const secret = b64(crypto.getRandomValues(new Uint8Array(32)));
-    const { token } = await derive(secret);
-    const accessHash = createHash("sha256").update(token).digest("hex");
-    const response = await fetch(`${server}/api/teams`, {
-      method: "POST",
-      redirect: "manual",
-      headers: { ...accessHeaders(), "content-type": "application/json" },
-      body: JSON.stringify({ accessHash }),
-    });
-    if (response.status !== 201) throw new Error(`Beaket answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
-    const { team } = await response.json();
-    const config = { server, team, secret, cursor: 0 };
+    const config = await makeTeam(server);
     writeConfig(config);
     console.log(`Made a team at ${server}. ${handOut(config, rest.includes("--print"))}`);
   } else if (cmd === "team" && sub === "join") {
@@ -240,9 +245,33 @@ try {
     if (!code.startsWith("bkt1.")) throw new Error("No join code found: copy the code your teammate sent (it starts with bkt1.) and run this again, or pass --file <file holding it>.");
     const { server, team, secret } = JSON.parse(dec.decode(Buffer.from(code.slice(5), "base64url")));
     const existing = readConfig();
-    if (existing && existing.team !== team) throw new Error(`This machine is already in another team (${CONFIG}). Remove that file first to join this one.`);
-    const { changed, dir } = await pull({ server, team, secret, cursor: existing?.cursor ?? 0 });
+    if (existing && existing.team !== team && existing.server === server && !rest.includes("--switch"))
+      throw new Error(`This machine is already in another team (${CONFIG}). If the team moved to a new code (team rotate), run this again with --switch.`);
+    if (existing && existing.team !== team) rmSync(cacheDir(existing), { recursive: true, force: true });
+    const { changed, dir } = await pull({ server, team, secret, cursor: existing?.team === team ? existing.cursor : 0 });
     console.log(`Joined the team at ${server}. ${changed} change(s) pulled; the records are in ${dir}.`);
+  } else if (cmd === "team" && sub === "rotate") {
+    // To remove someone: a new team with a new key gets every record, and the old team is emptied.
+    const old = needTeam();
+    await pull(old);
+    const files = readdirSync(cacheDir(old)).filter((f) => f.endsWith(".md"));
+    const fresh = await makeTeam(old.server);
+    for (const f of files) {
+      const text = readFileSync(join(cacheDir(old), f), "utf8");
+      const id = ID_LINE.exec(text)?.[1];
+      if (id) await call(fresh, "PUT", `/api/teams/${fresh.team}/records/${id}`, await seal(fresh, id, f, text));
+    }
+    for (const f of files) {
+      const id = ID_LINE.exec(readFileSync(join(cacheDir(old), f), "utf8"))?.[1];
+      if (id) await call(old, "DELETE", `/api/teams/${old.team}/records/${id}`);
+    }
+    rmSync(cacheDir(old), { recursive: true, force: true });
+    writeConfig(fresh);
+    await pull(readConfig());
+    console.log(
+      `Moved ${files.length} record(s) to a new team at ${fresh.server} and emptied the old one; its join code no longer reaches them, ` +
+        `though whoever pulled them before keeps their copies. ${handOut(fresh, rest.includes("--print"))} Give it only to the members who stay; each runs \`team join\` again.`,
+    );
   } else if (cmd === "team" && sub === "show") {
     console.log(handOut(needTeam(), rest.includes("--print")));
   } else if (cmd === "status") {
@@ -301,7 +330,7 @@ try {
       [
         `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
         ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}`),
-        "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. When a request goes against a record, say so in a few lines before doing anything: the record's title and path, the decision, and the reason in the decider's words with who they talked with, with the record's source links; then ask. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
+        "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone. When a request goes against a record, say so in a few lines before doing anything: the record's title, date and file name, the decision, and the reason in the decider's words with who they talked with, with the record's source links; then ask. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
         `To share a new record: node ${self} push <file>.`,
       ].join("\n"),
     );
