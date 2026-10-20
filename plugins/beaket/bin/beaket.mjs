@@ -9,6 +9,7 @@
 //
 // The join code holds the team's key. It never goes to standard output unless you ask with --print,
 // so that it stays out of an AI assistant's conversation, which is sent to its model.
+// The default server, stg.beaket.com, is Beaket's beta; Beaket will run on beaket.com later.
 //   node beaket.mjs status                       is this machine in a team, and where are its records
 //   node beaket.mjs paths                        the config, cache and private folders of this machine
 //   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private)
@@ -25,6 +26,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_SERVER = "https://stg.beaket.com";
+const onBeta = (server) => (server === DEFAULT_SERVER ? ` It is Beaket's beta server; Beaket will run on beaket.com later.` : "");
 const HOOK_TIMEOUT_MS = 3000;
 const INDEX_SIZE = 30;
 const CONFIG_DIR = process.env.BEAKET_CONFIG_DIR ?? join(homedir(), ".config", "beaket");
@@ -238,7 +240,7 @@ try {
     const server = (at >= 0 ? rest[at + 1] : process.env.BEAKET_URL ?? DEFAULT_SERVER).replace(/\/+$/, "");
     const config = await makeTeam(server);
     writeConfig(config);
-    console.log(`Made a team at ${server}. ${handOut(config, rest.includes("--print"))}`);
+    console.log(`Made a team at ${server}.${onBeta(server)} ${handOut(config, rest.includes("--print"))}`);
   } else if (cmd === "team" && sub === "join") {
     const at = rest.indexOf("--file");
     const code = (at >= 0 ? readFileSync(rest[at + 1], "utf8") : rest[0] ?? fromClipboard()).trim();
@@ -249,7 +251,7 @@ try {
       throw new Error(`This machine is already in another team (${CONFIG}). If the team moved to a new code (team rotate), run this again with --switch.`);
     if (existing && existing.team !== team) rmSync(cacheDir(existing), { recursive: true, force: true });
     const { changed, dir } = await pull({ server, team, secret, cursor: existing?.team === team ? existing.cursor : 0 });
-    console.log(`Joined the team at ${server}. ${changed} change(s) pulled; the records are in ${dir}.`);
+    console.log(`Joined the team at ${server}.${onBeta(server)} ${changed} change(s) pulled; the records are in ${dir}.`);
   } else if (cmd === "team" && sub === "rotate") {
     // To remove someone: a new team with a new key gets every record, and the old team is emptied.
     const old = needTeam();
@@ -276,7 +278,7 @@ try {
     console.log(handOut(needTeam(), rest.includes("--print")));
   } else if (cmd === "status") {
     const config = needTeam();
-    console.log(`Team ${config.team} at ${config.server}. Records: ${cacheDir(config)}. Script: ${self}`);
+    console.log(`Team ${config.team} at ${config.server}.${onBeta(config.server)} Records: ${cacheDir(config)}. Script: ${self}`);
   } else if (cmd === "push") {
     const config = needTeam();
     for (const file of [sub, ...rest].filter(Boolean)) {

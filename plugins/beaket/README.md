@@ -7,6 +7,9 @@ Cut the context of one decision down to what it needs, keep the decision as a re
 - **decision-record**: say what you chose, why and who you talked with; it drafts the record from the brief, you confirm, and it writes `decisions/<date>-<slug>.md`.
 - **team**: make or join a Beaket team, invite someone, share or withdraw records, and answer what leaves your machine.
 
+## Beta
+Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `beaket.com` later. Set another server with `team create --server <URL>` or `BEAKET_URL`.
+
 ## What leaves your machine
 - **Your sources.** The skills read them through the connectors your Claude Code already has, with your own access. What they read goes to the model as in any Claude Code session. The plugin sends none of it to Beaket; it has no connector or server of its own for sources.
 - **Your records, only in a team, only when you confirm.** `bin/beaket.mjs` encrypts a record on your machine before it leaves:
