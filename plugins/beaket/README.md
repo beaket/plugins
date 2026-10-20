@@ -1,6 +1,8 @@
 # Beaket plugin
 
-One skill, `decision-brief`: name a decision you must make, and it reads what your team wrote about it in Slack, Jira, Confluence, Notion, Google Meet notes and GitHub, and gives you one page with only what the decision needs. Everything is read on your machine, through the connectors your Claude Code already has, with your own access. Nothing is sent to Beaket.
+`decision-brief`: name a decision you must make, and it reads what your team wrote about it in Slack, Jira, Confluence, Notion, Google Meet notes and GitHub, and gives you one page with only what the decision needs. Everything is read on your machine, through the connectors your Claude Code already has, with your own access. Nothing is sent to Beaket.
+
+`decision-record`: when you decide, say what you chose, why and who you talked with; it drafts the record from the brief, you confirm, and it writes `decisions/<date>-<slug>.md` in your repository, where the next brief finds it.
 
 ## Try it
 ```

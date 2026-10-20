@@ -17,7 +17,7 @@ The person has too much context for one decision, spread over many tools, and mo
 
 ## Steps
 1. **The question.** Restate the decision in one line, with its options if they are known. Take the search terms from it, with synonyms and product names (for example Kafka, MSK, SQS, SNS, EventBridge). If the person named channels, Jira keys, documents or a time range, use them; if not, search broadly and say so. Do not wait for hints.
-2. **Find.** In each source you have, search with those terms: Slack threads, Jira issues and their comments, Confluence and Notion pages, Google Meet transcripts and Gemini notes in Google Drive, GitHub issues and pull requests. Keep the list of what you searched, where, with which terms and over what time.
+2. **Find.** First read the team's decision records: the `decisions/` folder at the root of the current git repository, or the folder the person named. A record there is a decision already made; use it under Agreed or Past, linked to its file. Then, in each source you have, search with those terms: Slack threads, Jira issues and their comments, Confluence and Notion pages, Google Meet transcripts and Gemini notes in Google Drive, GitHub issues and pull requests. Keep the list of what you searched, where, with which terms and over what time.
 3. **Read in parallel.** When there is more than a handful of items, give each source or batch to a subagent that returns only the excerpts that bear on the decision, each with its link, author and date, and a count of what it read and dropped by kind. Keep the raw text out of your own context.
 4. **Drop the noise**, counting each kind:
    - status updates ("done", "PTAL", "please review", "+1", in any language);
@@ -60,3 +60,4 @@ The person has too much context for one decision, spread over many tools, and mo
 ```
 
 7. Ask the person whether anything they know is missing, and offer to search there.
+8. Tell them, in one line, that when they decide they can say what they chose, why, and who they talked with, and it will be kept as a decision record (the `decision-record` skill).
