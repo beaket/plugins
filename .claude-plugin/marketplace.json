@@ -1,0 +1,14 @@
+{
+  "name": "beaket",
+  "description": "Beaket: decide with only the context a decision needs.",
+  "owner": {
+    "name": "Beaket"
+  },
+  "plugins": [
+    {
+      "name": "beaket",
+      "source": "./plugins/beaket",
+      "description": "Cut the context of one decision down to what it needs."
+    }
+  ]
+}
