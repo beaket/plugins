@@ -13,5 +13,5 @@ In Claude Code:
 ```
 Connect Slack, Atlassian, Notion and Google Drive first (`/mcp`). Then, for example:
 ```
-주문 이벤트 파이프라인을 Kafka(MSK)로 갈지 SQS/SNS + EventBridge로 갈지 정해야 해. 결정에 필요한 것만 정리해 줘.
+We need to decide whether the order event pipeline goes to Kafka (MSK) or to SQS/SNS with EventBridge. Give me only what the decision needs.
 ```

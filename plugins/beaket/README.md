@@ -6,6 +6,6 @@ One skill, `decision-brief`: name a decision you must make, and it reads what yo
 ```
 claude --plugin-dir ./plugins/beaket
 ```
-Then: `주문 이벤트 파이프라인을 Kafka(MSK)로 갈지 SQS/SNS + EventBridge로 갈지 정해야 해. 결정에 필요한 것만 정리해 줘.`
+Then: `We need to decide whether the order event pipeline goes to Kafka (MSK) or to SQS/SNS with EventBridge. Give me only what the decision needs.`
 
 Connect Slack, Atlassian, Notion and Google Drive in Claude Code first (`/mcp`); a source with no connection is listed under "Could not search".

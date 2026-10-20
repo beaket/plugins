@@ -1,6 +1,6 @@
 {
   "name": "beaket",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cut the context of one decision down to what it needs: one page from Slack, Jira, Confluence, Notion, Google Meet notes and GitHub, read on your machine with your own access.",
   "author": { "name": "Beaket" }
 }
