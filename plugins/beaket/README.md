@@ -7,6 +7,13 @@ Cut the context of one decision down to what it needs, keep the decision as a re
 - **decision-record**: say what you chose, why and who you talked with; it drafts the record from the brief, you confirm, and it writes `decisions/<date>-<slug>.md`.
 - **team**: make or join a Beaket team, invite someone, share or withdraw records, and answer what leaves your machine.
 
+## Install
+In Claude Code 2.1.275 or later:
+```
+/plugin install beaket --marketplace beaket/plugins
+```
+In earlier versions, `/plugin marketplace add beaket/plugins`, then `/plugin install beaket@beaket`.
+
 ## Beta
 Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `beaket.com` later. Set another server with `team create --server <URL>` or `BEAKET_URL`.
 
