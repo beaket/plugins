@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // Beaket team records: share decision records with your team, end-to-end encrypted.
-// Beaket keeps them as ciphertext and never receives the key.
+// Beaket keeps them as ciphertext and never receives a key. Each member has their own.
 //
-//   node beaket.mjs team create [--server URL]   make a team; its join code goes to the clipboard and a private file
-//   node beaket.mjs team join [--file F | code]  join a team with a code from a teammate, read from the clipboard by default
-//   node beaket.mjs team rotate                  remove members: move every record to a new team with a new key and code
-//   node beaket.mjs team show [--print]          put this team's join code on the clipboard again, to invite someone
+//   node beaket.mjs team create [--server URL] [--name N]   make a team; you are its first manager
+//   node beaket.mjs team invite [--manager]                 invite one person; the code goes to the clipboard and a private file
+//   node beaket.mjs team join [--file F | code] [--name N]  join with an invite code, read from the clipboard by default
+//   node beaket.mjs team members                            who is in the team, with their role
+//   node beaket.mjs team remove <name or id>                remove one member (managers): they are refused at once, and new records use a new key
+//   node beaket.mjs team log [--all]                        who joined, pushed, pulled, withdrew and removed what, and when
 //
-// The join code holds the team's key. It never goes to standard output unless you ask with --print,
-// so that it stays out of an AI assistant's conversation, which is sent to its model.
+// An invite code opens the team's key once, within a day. It never goes to standard output unless you
+// ask with --print, so that it stays out of an AI assistant's conversation, which is sent to its model.
 // The default server, stg.beaket.com, is Beaket's beta; Beaket will run on beaket.com later.
 //   node beaket.mjs status                       is this machine in a team, and where are its records
 //   node beaket.mjs paths                        the config, cache and private folders of this machine
@@ -21,7 +23,7 @@
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,16 +46,79 @@ const dec = new TextDecoder();
 const b64url = (bytes) => Buffer.from(bytes).toString("base64url");
 const b64 = (bytes) => Buffer.from(bytes).toString("base64");
 const fromB64 = (s) => new Uint8Array(Buffer.from(s, "base64"));
+const random = (n) => crypto.getRandomValues(new Uint8Array(n));
+const randomId = () => b64url(random(16));
+const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
-// The secret yields two things: the access token, which Beaket checks by its hash,
-// and the AES-256-GCM key, which never leaves this machine.
-async function derive(secret) {
-  const base = await crypto.subtle.importKey("raw", fromB64(secret), "HKDF", false, ["deriveBits", "deriveKey"]);
-  const params = (info) => ({ name: "HKDF", hash: "SHA-256", salt: enc.encode("beaket-team-v1"), info: enc.encode(info) });
-  const token = b64url(new Uint8Array(await crypto.subtle.deriveBits(params("access"), base, 256)));
-  const key = await crypto.subtle.deriveKey(params("records"), base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-  return { token, key };
+// --- Keys (ADR-020) ---
+// A team key (32 bytes, one per epoch) never leaves members' machines unwrapped. HKDF turns it
+// into a key per use: "records", "members" (cards) and "previous" (the key of the epoch before).
+// It reaches a member wrapped to their X25519 public key; an invite seals it with the invite's secret.
+
+const SALT = enc.encode("beaket-team-v2");
+
+async function hkdfKey(bytes, info) {
+  const base = await crypto.subtle.importKey("raw", bytes, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: SALT, info: enc.encode(info) }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
+
+async function hkdfBits(bytes, info) {
+  const base = await crypto.subtle.importKey("raw", bytes, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: SALT, info: enc.encode(info) }, base, 256));
+}
+
+async function seal(key, plain, aad) {
+  const nonce = random(12);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: enc.encode(aad) }, key, plain));
+  return b64(Buffer.concat([nonce, ct]));
+}
+
+async function unseal(key, blob, aad) {
+  const bytes = fromB64(blob);
+  return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12), additionalData: enc.encode(aad) }, key, bytes.slice(12)));
+}
+
+async function keyPair() {
+  const pair = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  return {
+    publicKey: b64(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey))),
+    privateKey: b64(new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey))),
+  };
+}
+
+const importPublic = (b) => crypto.subtle.importKey("raw", fromB64(b), { name: "X25519" }, false, []);
+const importPrivate = (b) => crypto.subtle.importKey("pkcs8", fromB64(b), { name: "X25519" }, false, ["deriveBits"]);
+
+// The team key, wrapped to a member's public key: an ephemeral X25519 exchange, then HKDF and AES-GCM.
+async function wrap(teamKey, publicKey, aad) {
+  const eph = await crypto.subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "X25519", public: await importPublic(publicKey) }, eph.privateKey, 256));
+  const sealed = fromB64(await seal(await hkdfKey(shared, "wrap"), teamKey, aad));
+  return b64(Buffer.concat([new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey)), sealed]));
+}
+
+async function unwrap(blob, privateKey, aad) {
+  const bytes = fromB64(blob);
+  const eph = await crypto.subtle.importKey("raw", bytes.slice(0, 32), { name: "X25519" }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "X25519", public: eph }, await importPrivate(privateKey), 256));
+  return unseal(await hkdfKey(shared, "wrap"), b64(bytes.slice(32)), aad);
+}
+
+const wrapAad = (team, member, epoch) => `${team}/${member}/${epoch}`;
+const cardAad = (team, member) => `${team}/${member}`;
+const sealCard = async (teamKey, team, member, card) => seal(await hkdfKey(teamKey, "members"), enc.encode(JSON.stringify(card)), cardAad(team, member));
+const openCard = async (teamKey, team, member, blob) => JSON.parse(dec.decode(await unseal(await hkdfKey(teamKey, "members"), blob, cardAad(team, member))));
+
+// An invite's secret gives the token Beaket checks by its hash, and the key that seals the team key.
+const inviteToken = async (secret) => b64url(await hkdfBits(fromB64(secret), "invite"));
+const inviteKey = (secret) => hkdfKey(fromB64(secret), "invite-key");
+
+const keyOf = (config, epoch) => {
+  const k = config.keys?.[epoch];
+  return k ? fromB64(k) : null;
+};
+
+// --- This machine's team ---
 
 function readConfig() {
   if (!existsSync(CONFIG)) return null;
@@ -66,8 +131,14 @@ function writeConfig(config) {
   chmodSync(CONFIG, 0o600);
 }
 
-const joinCode = (c) => "bkt1." + b64url(enc.encode(JSON.stringify({ server: c.server, team: c.team, secret: c.secret })));
 const cacheDir = (c) => join(CACHE_ROOT, c.team);
+
+function personName(rest) {
+  const at = rest.indexOf("--name");
+  if (at >= 0 && rest[at + 1]) return rest[at + 1];
+  const git = spawnSync("git", ["config", "user.name"], { encoding: "utf8" });
+  return (git.status === 0 && git.stdout.trim()) || userInfo().username;
+}
 
 const CLIPBOARD = {
   darwin: { copy: ["pbcopy"], paste: ["pbpaste"] },
@@ -88,15 +159,18 @@ function fromClipboard() {
   return r.status === 0 ? r.stdout.trim() : "";
 }
 
-// Keep the join code in a file only its owner can read, and on the clipboard; print it only on request.
-function handOut(config, print) {
-  const code = joinCode(config);
+// Keep the invite code in a file only its owner can read, and on the clipboard; print it only on request.
+function handOut(code, expiresAt, print) {
   mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(JOIN_FILE, code + "\n", { mode: 0o600 });
   chmodSync(JOIN_FILE, 0o600);
   if (print) return code;
   const copied = toClipboard(code);
-  return `The join code is ${copied ? "on your clipboard and " : ""}in ${JOIN_FILE} (readable only by you). Paste it to each teammate in a private message; whoever holds it can read every record of the team. Do not paste it into an AI assistant: they join with \`team join\`, which reads it from their clipboard.`;
+  return (
+    `The invite code is ${copied ? "on your clipboard and " : ""}in ${JOIN_FILE} (readable only by you). ` +
+    `It lets one person join, once, until ${expiresAt}. Send it to that person in a private message. ` +
+    "Do not paste it into an AI assistant: they join with `team join`, which reads it from their clipboard."
+  );
 }
 
 // A Cloudflare Access service token, when the server sits behind one.
@@ -107,45 +181,97 @@ function accessHeaders() {
   return id && secret ? { "cf-access-client-id": id, "cf-access-client-secret": secret } : {};
 }
 
-async function call(config, method, path, body, timeoutMs) {
-  const { token } = await derive(config.secret);
-  const response = await fetch(`${config.server}${path}`, {
+class BeaketError extends Error {
+  constructor(status, body) {
+    super(`Beaket answered ${status}: ${body.slice(0, 300)}`);
+    this.status = status;
+  }
+}
+
+async function request(server, method, path, body, authorization, timeoutMs) {
+  const response = await fetch(`${server}${path}`, {
     method,
     redirect: "manual",
     signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
-    headers: { ...accessHeaders(), authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
+    headers: { ...accessHeaders(), ...(authorization ? { authorization } : {}), ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (response.status >= 300 && response.status < 400) throw new Error(`${config.server} sent this to a sign-in page; it is behind Cloudflare Access.`);
-  if (!response.ok) throw new Error(`Beaket answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  if (response.status >= 300 && response.status < 400) throw new Error(`${server} sent this to a sign-in page; it is behind Cloudflare Access.`);
+  if (!response.ok) throw new BeaketError(response.status, await response.text());
   return response.json();
 }
 
-async function seal(config, id, name, text) {
-  const { key } = await derive(config.secret);
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const data = enc.encode(JSON.stringify({ name, text }));
-  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: enc.encode(`${config.team}/${id}`) }, key, data);
-  return { nonce: b64(nonce), ciphertext: b64(new Uint8Array(ciphertext)) };
+const call = (config, method, path, body, timeoutMs) => request(config.server, method, path, body, `Bearer ${config.member}.${config.token}`, timeoutMs);
+
+// The current team key, unwrapped with this member's private key, and every earlier one, each opened by the next.
+async function refreshKeys(config) {
+  const got = await call(config, "GET", `/api/teams/${config.team}/keys`);
+  const keys = { [got.epoch]: b64(await unwrap(got.wrapped, config.privateKey, wrapAad(config.team, config.member, got.epoch))) };
+  const previous = Object.fromEntries(got.epochs.map((e) => [e.epoch, e.previous]));
+  for (let e = got.epoch; e > 1; e--) {
+    const opened = await unseal(await hkdfKey(fromB64(keys[e]), "previous"), previous[e], `${config.team}/${e}`);
+    keys[e - 1] = b64(opened);
+  }
+  const fresh = { ...config, epoch: got.epoch, keys };
+  writeConfig(fresh);
+  return fresh;
 }
 
-async function open(config, record) {
-  const { key } = await derive(config.secret);
+async function sealRecord(config, id, name, text) {
+  const key = await hkdfKey(keyOf(config, config.epoch), "records");
+  const nonce = random(12);
+  const data = enc.encode(JSON.stringify({ name, text }));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: enc.encode(`${config.team}/${id}/${config.epoch}`) }, key, data);
+  return { epoch: config.epoch, nonce: b64(nonce), ciphertext: b64(new Uint8Array(ciphertext)) };
+}
+
+async function openRecord(config, record) {
+  const key = await hkdfKey(keyOf(config, record.epoch), "records");
   const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: fromB64(record.nonce), additionalData: enc.encode(`${config.team}/${record.id}`) },
+    { name: "AES-GCM", iv: fromB64(record.nonce), additionalData: enc.encode(`${config.team}/${record.id}/${record.epoch}`) },
     key,
     fromB64(record.ciphertext),
   );
   return JSON.parse(dec.decode(plain));
 }
 
+// A push sealed with an older key is refused (409); fetch the current key and push again.
+async function pushRecord(config, id, name, text) {
+  try {
+    return { config, ...(await call(config, "PUT", `/api/teams/${config.team}/records/${id}`, await sealRecord(config, id, name, text))) };
+  } catch (error) {
+    if (error.status !== 409) throw error;
+    const fresh = await refreshKeys(config);
+    return { config: fresh, ...(await call(fresh, "PUT", `/api/teams/${fresh.team}/records/${id}`, await sealRecord(fresh, id, name, text))) };
+  }
+}
+
 function needTeam() {
   const config = readConfig();
   if (!config) {
-    console.error("This machine is in no Beaket team. Make one with `team create`, or join with `team join <code>`.");
+    console.error("This machine is in no Beaket team. Make one with `team create`, or join with an invite code (`team join`).");
+    process.exit(2);
+  }
+  if (!config.member) {
+    console.error(`${CONFIG} is from a team with one shared code, which Beaket no longer serves. Remove that file, then ask a manager of your team for an invite, or make a new team.`);
     process.exit(2);
   }
   return config;
+}
+
+// The members with the names on their cards; a card that does not open, or names another public key, is marked.
+async function members(config) {
+  const { members: list } = await call(config, "GET", `/api/teams/${config.team}/members`);
+  return Promise.all(
+    list.map(async (m) => {
+      try {
+        const card = await openCard(keyOf(config, m.cardEpoch), config.team, m.id, m.card);
+        return { ...m, name: card.name, verified: card.publicKey === m.publicKey };
+      } catch {
+        return { ...m, name: `(unknown ${m.id.slice(0, 6)})`, verified: false };
+      }
+    }),
+  );
 }
 
 // The record's id lives in its first line, so that every member pushes to the same record.
@@ -177,7 +303,8 @@ function findCached(dir, id) {
   return null;
 }
 
-async function pull(config, timeoutMs) {
+async function pull(start, timeoutMs) {
+  let config = start;
   const dir = cacheDir(config);
   mkdirSync(dir, { recursive: true });
   let changed = 0;
@@ -188,7 +315,8 @@ async function pull(config, timeoutMs) {
       const old = findCached(dir, r.id);
       if (old) rmSync(old);
       if (r.ciphertext) {
-        const { name, text } = await open(config, r);
+        if (!keyOf(config, r.epoch)) config = await refreshKeys(config);
+        const { name, text } = await openRecord(config, r);
         writeFileSync(cachePath(dir, r.id, name), text);
       }
       after = r.seq;
@@ -196,8 +324,9 @@ async function pull(config, timeoutMs) {
     }
     if (!page.more) break;
   }
-  writeConfig({ ...config, cursor: after });
-  return { changed, dir };
+  config = { ...config, cursor: after };
+  writeConfig(config);
+  return { changed, dir, config };
 }
 
 function index(config) {
@@ -208,26 +337,11 @@ function index(config) {
     .map((f) => {
       const text = readFileSync(join(dir, f), "utf8");
       const title = /^# (.+)$/m.exec(text)?.[1] ?? f;
-      const date = /^- (?:Date|\uB0A0\uC9DC):\s*(\S+)/m.exec(text)?.[1] ?? statSync(join(dir, f)).mtime.toISOString().slice(0, 10);
+      const date = /^- (?:Date|날짜):\s*(\S+)/m.exec(text)?.[1] ?? statSync(join(dir, f)).mtime.toISOString().slice(0, 10);
       return { file: f, title, date };
     })
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, INDEX_SIZE);
-}
-
-async function makeTeam(server) {
-  const secret = b64(crypto.getRandomValues(new Uint8Array(32)));
-  const { token } = await derive(secret);
-  const accessHash = createHash("sha256").update(token).digest("hex");
-  const response = await fetch(`${server}/api/teams`, {
-    method: "POST",
-    redirect: "manual",
-    headers: { ...accessHeaders(), "content-type": "application/json" },
-    body: JSON.stringify({ accessHash }),
-  });
-  if (response.status !== 201) throw new Error(`Beaket answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  const { team } = await response.json();
-  return { server, team, secret, cursor: 0 };
 }
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -238,53 +352,159 @@ try {
     if (readConfig()) throw new Error(`This machine is already in a team (${CONFIG}). Remove that file first to make another.`);
     const at = rest.indexOf("--server");
     const server = (at >= 0 ? rest[at + 1] : process.env.BEAKET_URL ?? DEFAULT_SERVER).replace(/\/+$/, "");
-    const config = await makeTeam(server);
-    writeConfig(config);
-    console.log(`Made a team at ${server}.${onBeta(server)} ${handOut(config, rest.includes("--print"))}`);
+    const team = randomId();
+    const member = randomId();
+    const token = b64url(random(32));
+    const pair = await keyPair();
+    const teamKey = random(32);
+    const name = personName(rest);
+    await request(server, "POST", "/api/teams", {
+      team,
+      member,
+      tokenHash: sha256(token),
+      publicKey: pair.publicKey,
+      wrapped: await wrap(teamKey, pair.publicKey, wrapAad(team, member, 1)),
+      card: await sealCard(teamKey, team, member, { name, publicKey: pair.publicKey }),
+    });
+    writeConfig({ server, team, member, token, name, role: "manager", ...pair, epoch: 1, keys: { 1: b64(teamKey) }, cursor: 0 });
+    console.log(`Made a team at ${server}, with you (${name}) as its manager.${onBeta(server)} Invite each person with \`team invite\`; an invite lets one person join, once, within a day.`);
+  } else if (cmd === "team" && sub === "invite") {
+    let config = needTeam();
+    if (config.role !== "manager") throw new Error("Only a manager of the team can invite. Ask one of them.");
+    config = await refreshKeys(config);
+    const secret = b64(random(32));
+    const role = rest.includes("--manager") ? "manager" : "member";
+    const wrapped = await seal(await inviteKey(secret), keyOf(config, config.epoch), `${config.team}/invite`);
+    const made = await call(config, "POST", `/api/teams/${config.team}/invites`, { tokenHash: sha256(await inviteToken(secret)), role, epoch: config.epoch, wrapped });
+    const code = "bkt2." + b64url(enc.encode(JSON.stringify({ server: config.server, team: config.team, secret })));
+    console.log(`Made an invite as ${role}. ${handOut(code, made.expiresAt, rest.includes("--print"))}`);
   } else if (cmd === "team" && sub === "join") {
     const at = rest.indexOf("--file");
-    const code = (at >= 0 ? readFileSync(rest[at + 1], "utf8") : rest[0] ?? fromClipboard()).trim();
-    if (!code.startsWith("bkt1.")) throw new Error("No join code found: copy the code your teammate sent (it starts with bkt1.) and run this again, or pass --file <file holding it>.");
+    const code = (at >= 0 ? readFileSync(rest[at + 1], "utf8") : rest[0] && !rest[0].startsWith("--") ? rest[0] : fromClipboard()).trim();
+    if (code.startsWith("bkt1.")) throw new Error("This is a code of a team with one shared code, which Beaket no longer serves. Ask a manager of the team for an invite (`team invite`).");
+    if (!code.startsWith("bkt2.")) throw new Error("No invite code found: copy the code your teammate sent (it starts with bkt2.) and run this again, or pass --file <file holding it>.");
     const { server, team, secret } = JSON.parse(dec.decode(Buffer.from(code.slice(5), "base64url")));
     const existing = readConfig();
-    if (existing && existing.team !== team && existing.server === server && !rest.includes("--switch"))
-      throw new Error(`This machine is already in another team (${CONFIG}). If the team moved to a new code (team rotate), run this again with --switch.`);
-    if (existing && existing.team !== team) rmSync(cacheDir(existing), { recursive: true, force: true });
-    const { changed, dir } = await pull({ server, team, secret, cursor: existing?.team === team ? existing.cursor : 0 });
-    console.log(`Joined the team at ${server}.${onBeta(server)} ${changed} change(s) pulled; the records are in ${dir}.`);
-  } else if (cmd === "team" && sub === "rotate") {
-    // To remove someone: a new team with a new key gets every record, and the old team is emptied.
-    const old = needTeam();
-    await pull(old);
-    const files = readdirSync(cacheDir(old)).filter((f) => f.endsWith(".md"));
-    const fresh = await makeTeam(old.server);
-    for (const f of files) {
-      const text = readFileSync(join(cacheDir(old), f), "utf8");
-      const id = ID_LINE.exec(text)?.[1];
-      if (id) await call(fresh, "PUT", `/api/teams/${fresh.team}/records/${id}`, await seal(fresh, id, f, text));
+    if (existing?.team === team && existing.member) throw new Error(`This machine is already in this team (${CONFIG}).`);
+    if (existing && !rest.includes("--switch")) throw new Error(`This machine is already in another team (${CONFIG}). To leave it for this one, run this again with --switch.`);
+    const auth = `Invite ${await inviteToken(secret)}`;
+    let invite;
+    try {
+      invite = await request(server, "GET", `/api/teams/${team}/invite`, null, auth);
+    } catch (error) {
+      if (error.status === 401) throw new Error("This invite was already used, has expired, or was cancelled when someone was removed. Ask a manager of the team for a new one.");
+      throw error;
     }
-    for (const f of files) {
-      const id = ID_LINE.exec(readFileSync(join(cacheDir(old), f), "utf8"))?.[1];
-      if (id) await call(old, "DELETE", `/api/teams/${old.team}/records/${id}`);
-    }
-    rmSync(cacheDir(old), { recursive: true, force: true });
-    writeConfig(fresh);
-    await pull(readConfig());
-    console.log(
-      `Moved ${files.length} record(s) to a new team at ${fresh.server} and emptied the old one; its join code no longer reaches them, ` +
-        `though whoever pulled them before keeps their copies. ${handOut(fresh, rest.includes("--print"))} Give it only to the members who stay; each runs \`team join\` again.`,
+    const teamKey = await unseal(await inviteKey(secret), invite.wrapped, `${team}/invite`);
+    const member = randomId();
+    const token = b64url(random(32));
+    const pair = await keyPair();
+    const name = personName(rest);
+    const joined = await request(
+      server,
+      "POST",
+      `/api/teams/${team}/members`,
+      {
+        member,
+        tokenHash: sha256(token),
+        publicKey: pair.publicKey,
+        wrapped: await wrap(teamKey, pair.publicKey, wrapAad(team, member, invite.epoch)),
+        card: await sealCard(teamKey, team, member, { name, publicKey: pair.publicKey }),
+        epoch: invite.epoch,
+      },
+      auth,
     );
-  } else if (cmd === "team" && sub === "show") {
-    console.log(handOut(needTeam(), rest.includes("--print")));
+    if (existing) rmSync(cacheDir(existing), { recursive: true, force: true });
+    let config = { server, team, member, token, name, role: joined.role, ...pair, epoch: invite.epoch, keys: { [invite.epoch]: b64(teamKey) }, cursor: 0 };
+    writeConfig(config);
+    config = await refreshKeys(config);
+    const { changed, dir } = await pull(config);
+    rmSync(JOIN_FILE, { force: true });
+    console.log(`Joined the team at ${server} as ${name} (${joined.role}).${onBeta(server)} ${changed} change(s) pulled; the records are in ${dir}.`);
+  } else if (cmd === "team" && sub === "members") {
+    const config = await refreshKeys(needTeam());
+    for (const m of await members(config)) {
+      const state = m.removedAt ? `removed ${m.removedAt.slice(0, 10)}` : `joined ${m.joinedAt.slice(0, 10)}`;
+      const warn = m.verified ? "" : " — its card does not match its key; do not trust this entry";
+      console.log(`- ${m.name}${m.id === config.member ? " (you)" : ""}: ${m.role}, ${state}, id ${m.id}${warn}`);
+    }
+  } else if (cmd === "team" && sub === "remove") {
+    let config = needTeam();
+    if (config.role !== "manager") throw new Error("Only a manager of the team can remove a member. Ask one of them.");
+    if (!rest[0]) throw new Error("Name the member to remove, by name or id (see `team members`).");
+    config = await refreshKeys(config);
+    const list = await members(config);
+    const active = list.filter((m) => !m.removedAt);
+    const wanted = rest.join(" ").toLowerCase();
+    const found = active.filter((m) => m.id === rest[0] || m.name.toLowerCase() === wanted);
+    if (found.length === 0) throw new Error(`No current member is named ${rest.join(" ")}. See \`team members\`.`);
+    if (found.length > 1) throw new Error(`More than one member is named ${rest.join(" ")}; remove one by id: ${found.map((m) => m.id).join(", ")}.`);
+    const gone = found[0];
+    if (gone.id === config.member) throw new Error("You cannot remove yourself; ask another manager.");
+    const staying = active.filter((m) => m.id !== gone.id);
+    const forged = staying.filter((m) => !m.verified);
+    if (forged.length) throw new Error(`The card of ${forged.map((m) => m.id).join(", ")} does not match the key Beaket lists, so no new key was made. Tell Beaket.`);
+    const epoch = config.epoch + 1;
+    const fresh = random(32);
+    await call(config, "POST", `/api/teams/${config.team}/rotate`, {
+      remove: gone.id,
+      epoch,
+      previous: await seal(await hkdfKey(fresh, "previous"), keyOf(config, config.epoch), `${config.team}/${epoch}`),
+      keys: await Promise.all(staying.map(async (m) => ({ member: m.id, wrapped: await wrap(fresh, m.publicKey, wrapAad(config.team, m.id, epoch)) }))),
+      cards: await Promise.all(staying.map(async (m) => ({ member: m.id, card: await sealCard(fresh, config.team, m.id, { name: m.name, publicKey: m.publicKey }) }))),
+    });
+    await refreshKeys(config);
+    console.log(
+      `Removed ${gone.name}. Beaket refuses them from now on, and records pushed from now on use a new key that only the ${staying.length} remaining member(s) have. ` +
+        "They keep the copies they already pulled. Invites not yet used were cancelled.",
+    );
+  } else if (cmd === "team" && sub === "log") {
+    const config = await refreshKeys(needTeam());
+    const names = Object.fromEntries((await members(config)).map((m) => [m.id, m.name]));
+    const titles = {};
+    const dir = cacheDir(config);
+    if (existsSync(dir))
+      for (const f of readdirSync(dir).filter((f) => f.endsWith(".md"))) {
+        const text = readFileSync(join(dir, f), "utf8");
+        const id = ID_LINE.exec(text)?.[1];
+        if (id) titles[id] = /^# (.+)$/m.exec(text)?.[1] ?? f;
+      }
+    const entries = [];
+    for (let after = 0; ; ) {
+      const page = await call(config, "GET", `/api/teams/${config.team}/log?after=${after}`);
+      entries.push(...page.entries);
+      if (!page.more || page.entries.length === 0) break;
+      after = page.entries.at(-1).seq;
+    }
+    // An invite is shown by who used it.
+    const usedBy = Object.fromEntries(entries.filter((e) => e.action === "joined").map((e) => [e.subject, names[e.member] ?? e.member]));
+    const describe = (e) => {
+      if (e.action === "invited") {
+        const [id, role] = (e.subject ?? "").split(" ");
+        return `${usedBy[id] ? usedBy[id] : "someone (not used)"} as ${role}`;
+      }
+      if (e.action === "joined") return "";
+      if (e.action === "removed") return names[e.subject] ?? e.subject;
+      if (e.action === "pushed" || e.action === "withdrew") return titles[e.subject] ?? `record ${e.subject}`;
+      if (e.action === "pulled") return `changes ${e.subject.replace("-", " to ")}`;
+      return e.subject ?? "";
+    };
+    const shown = rest.includes("--all") ? entries : entries.slice(-50);
+    for (const e of shown) {
+      const subject = describe(e);
+      console.log(`${e.at.slice(0, 16).replace("T", " ")} UTC  ${names[e.member] ?? e.member}  ${e.action}${subject ? ` ${subject}` : ""}`);
+    }
+    if (shown.length < entries.length) console.log(`(${entries.length - shown.length} earlier line(s); --all shows them)`);
   } else if (cmd === "status") {
     const config = needTeam();
-    console.log(`Team ${config.team} at ${config.server}.${onBeta(config.server)} Records: ${cacheDir(config)}. Script: ${self}`);
+    console.log(`Team ${config.team} at ${config.server}, as ${config.name} (${config.role}).${onBeta(config.server)} Records: ${cacheDir(config)}. Script: ${self}`);
   } else if (cmd === "push") {
-    const config = needTeam();
+    let config = needTeam();
     for (const file of [sub, ...rest].filter(Boolean)) {
       const { id, text } = recordId(file);
-      const { seq } = await call(config, "PUT", `/api/teams/${config.team}/records/${id}`, await seal(config, id, basename(file), text));
-      console.log(`Shared ${file} (record ${id}, change ${seq}).`);
+      const pushed = await pushRecord(config, id, basename(file), text);
+      config = pushed.config;
+      console.log(`Shared ${file} (record ${id}, change ${pushed.seq}).`);
     }
     await pull(config);
   } else if (cmd === "paths") {
@@ -312,14 +532,15 @@ try {
       const { changed, dir } = await pull(config);
       console.log(`${changed} change(s). The team's records are in ${dir}.`);
     } catch (error) {
-      console.log(`Could not reach Beaket (${error.message}). The records of the last pull are in ${cacheDir(config)}.`);
+      const why = error.status === 401 ? "this member was removed from the team, or the team is gone" : error.message;
+      console.log(`Could not pull (${why}). The records of the last pull are in ${cacheDir(config)}.`);
     }
   } else if (cmd === "index") {
     const config = needTeam();
     for (const r of index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}`);
   } else if (cmd === "session-start") {
     const config = readConfig();
-    if (!config) process.exit(0);
+    if (!config?.member) process.exit(0);
     let note = "";
     try {
       await pull(config, HOOK_TIMEOUT_MS);

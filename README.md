@@ -21,6 +21,6 @@ We need to decide whether the order event pipeline goes to Kafka (MSK) or to SQS
 ```
 
 ### Share records with your team, end-to-end encrypted
-Ask Claude to make a Beaket team (the **team** skill). It puts a join code on your clipboard; give it to teammates privately, and each copies it and asks Claude to join. From then on a record you confirm is encrypted on your machine and shared; Beaket keeps it but cannot read it, because the key never leaves your team's machines. Every brief and every new Claude Code session of a member reads the team's records first. A record you keep to yourself is never shared.
+Ask Claude to make a Beaket team (the **team** skill), then to invite each teammate. Each invite goes on your clipboard and works for one person, once, within a day; send it privately, and they copy it and ask Claude to join. From then on a record you confirm is encrypted on your machine and shared; Beaket keeps it but cannot read it, because the team's key never leaves your team's machines. A manager can remove one member, and every member can see who joined, shared, pulled and removed what. Every brief and every new Claude Code session of a member reads the team's records first. A record you keep to yourself is never shared.
 
 What leaves your machine, line by line: [plugins/beaket/README.md](plugins/beaket/README.md).
