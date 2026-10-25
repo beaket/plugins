@@ -7,7 +7,7 @@ description: Set up and explain the person's Beaket team, which shares decision 
 
 A Beaket team shares decision records among its members. A record is encrypted on the member's machine with a key only the team has, and Beaket keeps the ciphertext. Each member has their own key; managers invite and remove members. Your job is to set the team up, share only what the person chose, and answer questions about it from the code, not from memory.
 
-The script is `node <plugin>/bin/beaket.mjs`, where the plugin folder is two levels above this skill's base directory. Use that path in every command and show it to the person when they ask.
+The script is `node <skill>/scripts/beaket.mjs`, where `<skill>` is this skill's folder, the one that holds this SKILL.md. Use that path in every command and show it to the person when they ask.
 
 ## Rules
 - Share a record only when the person said to, by name or as a list they confirmed. Never share a record marked `<!-- beaket-private -->`, one the person said to keep to themselves, or one holding something they said not to share; the script refuses the marked ones.
@@ -15,7 +15,7 @@ The script is `node <plugin>/bin/beaket.mjs`, where the plugin folder is two lev
 - Answer what Beaket stores or can read only from the plugin's code and README, quoting the lines, and say what you could not check.
 
 ## What leaves the machine
-When the person asks, read `<plugin>/bin/beaket.mjs` and `<plugin>/README.md` and show them:
+When the person asks, read `<skill>/scripts/beaket.mjs`, which is the whole client, and show them:
 - The decision-brief and decision-record skills read sources through the person's own connectors. What they read goes to the model as in any Claude Code session; the plugin sends none of it to Beaket and has no connector or server of its own for sources.
 - In a team, a record goes to Beaket only through `push`, encrypted first with the team key (`sealRecord`); Beaket receives the ciphertext, the nonce and the key's epoch. Each member has their own X25519 key pair and token (`keyPair`); Beaket receives the public key and the SHA-256 of the token, and the team key only wrapped to each member's public key (`wrap`).
 - Beaket sees the team's id, each member's random id, role, public key and dates, each record's random id, size, epoch and when it changed, and a log of which member id joined, shared, pulled, withdrew or removed what; like any web server, it sees the IP address of each call. It does not see names (sealed on each member's card), titles, text, file names or any key.

@@ -12,7 +12,7 @@ Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `be
 
 ## What leaves your machine
 - **Your sources.** The skills read them through the connectors your Claude Code already has, with your own access. What they read goes to the model as in any Claude Code session. The plugin sends none of it to Beaket; it has no connector or server of its own for sources.
-- **Your records, only in a team, only when you confirm.** `bin/beaket.mjs` encrypts a record on your machine before it leaves:
+- **Your records, only in a team, only when you confirm.** `bin/beaket.mjs`, of which each skill carries a copy in its `scripts/`, encrypts a record on your machine before it leaves:
   - The team key (32 random bytes) is made on a member's machine and never leaves members' machines unwrapped. `hkdfKey` turns it, through HKDF-SHA-256, into a key for records, one for member cards and one for the previous team key.
   - `sealRecord`: the file name and text are encrypted with AES-256-GCM and a random nonce, bound to the team, the record id and the key's epoch.
   - Beaket receives only that ciphertext, the nonce and the epoch.

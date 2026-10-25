@@ -19,7 +19,7 @@
 //   node beaket.mjs remove <file>                withdraw a shared record
 //   node beaket.mjs pull                         fetch and decrypt the team's records
 //   node beaket.mjs index                        list the team's newest records
-//   node beaket.mjs session-start                for the SessionStart hook: pull, then print the index
+//   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index (--json for GitHub Copilot)
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -549,14 +549,14 @@ try {
     }
     const list = index(config);
     if (list.length === 0) process.exit(0);
-    console.log(
-      [
-        `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
-        ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}`),
-        "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone. When a request goes against a record, say so in a few lines before doing anything: the record's title, date and file name, the decision, and the reason in the decider's words with who they talked with, with the record's source links; then ask. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
-        `To share a new record: node ${self} push <file>.`,
-      ].join("\n"),
-    );
+    const text = [
+      `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
+      ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}`),
+      "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone. When a request goes against a record, say so in a few lines before doing anything: the record's title, date and file name, the decision, and the reason in the decider's words with who they talked with, with the record's source links; then ask. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
+      `To share a new record: node ${self} push <file>.`,
+    ].join("\n");
+    // Claude Code and Codex add plain stdout to the session; GitHub Copilot reads only JSON {additionalContext}.
+    console.log(sub === "--json" ? JSON.stringify({ additionalContext: text }) : text);
   } else {
     const lines = readFileSync(self, "utf8").split("\n").slice(1);
     console.log(lines.slice(0, lines.findIndex((l) => !l.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
