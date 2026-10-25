@@ -32,4 +32,4 @@ Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `be
 - **You do not have to trust Beaket's server** to keep records secret: it never receives a team key. You rely on it to refuse a removed member the records pushed before their removal.
 - **Private records** carry `<!-- beaket-private -->` and `push` refuses them.
 
-This script is the whole client: what leaves your machine for Beaket is what it sends, and you can read it.
+This script is the whole client: what leaves your machine for Beaket is what it sends, and you can read it. Each skill carries a copy of it in its `scripts/`, so that every tool finds it; `node bin/beaket.mjs verify` shows that all copies are the same.

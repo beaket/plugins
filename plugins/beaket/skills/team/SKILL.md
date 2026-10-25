@@ -16,6 +16,7 @@ The script is `node <skill>/scripts/beaket.mjs`, where `<skill>` is this skill's
 
 ## What leaves the machine
 When the person asks, read `<skill>/scripts/beaket.mjs`, which is the whole client, and show them:
+- The plugin has one script: `bin/beaket.mjs`, and a copy of it in each skill's `scripts/`. `verify` prints its SHA-256 and whether every copy is the same; run it rather than comparing them yourself.
 - The decision-brief and decision-record skills read sources through the person's own connectors. What they read goes to the model as in any Claude Code session; the plugin sends none of it to Beaket and has no connector or server of its own for sources.
 - In a team, a record goes to Beaket only through `push`, encrypted first with the team key (`sealRecord`); Beaket receives the ciphertext, the nonce and the key's epoch. Each member has their own X25519 key pair and token (`keyPair`); Beaket receives the public key and the SHA-256 of the token, and the team key only wrapped to each member's public key (`wrap`).
 - Beaket sees the team's id, each member's random id, role, public key and dates, each record's random id, size, epoch and when it changed, and a log of which member id joined, shared, pulled, withdrew or removed what; like any web server, it sees the IP address of each call. It does not see names (sealed on each member's card), titles, text, file names or any key.

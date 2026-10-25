@@ -19,12 +19,13 @@
 //   node beaket.mjs remove <file>                withdraw a shared record
 //   node beaket.mjs pull                         fetch and decrypt the team's records
 //   node beaket.mjs index                        list the team's newest records
+//   node beaket.mjs verify                       the SHA-256 of this script, and whether every copy of it in the plugin is the same
 //   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index (--json for GitHub Copilot)
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, userInfo } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_SERVER = "https://stg.beaket.com";
@@ -535,6 +536,22 @@ try {
       const why = error.status === 401 ? "this member was removed from the team, or the team is gone" : error.message;
       console.log(`Could not pull (${why}). The records of the last pull are in ${cacheDir(config)}.`);
     }
+  } else if (cmd === "verify") {
+    // Each skill carries a copy of bin/beaket.mjs in its scripts/ (ADR-021); show that they are one script.
+    const here = dirname(self);
+    const root = basename(here) === "scripts" ? join(here, "..", "..", "..") : join(here, "..");
+    const copies = [join(root, "bin", "beaket.mjs")];
+    if (existsSync(join(root, "skills"))) for (const s of readdirSync(join(root, "skills"))) copies.push(join(root, "skills", s, "scripts", "beaket.mjs"));
+    const sha = (f) => createHash("sha256").update(readFileSync(f)).digest("hex");
+    const mine = sha(self);
+    console.log(`This script: ${self}\nSHA-256: ${mine}`);
+    let differ = 0;
+    for (const f of copies.filter(existsSync)) {
+      const same = sha(f) === mine;
+      if (!same) differ++;
+      console.log(`${same ? "same" : "DIFFERENT"}  ${f}`);
+    }
+    if (differ) process.exit(1);
   } else if (cmd === "index") {
     const config = needTeam();
     for (const r of index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}`);
