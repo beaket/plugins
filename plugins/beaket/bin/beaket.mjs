@@ -19,12 +19,13 @@
 //   node beaket.mjs remove <file>                withdraw a shared record
 //   node beaket.mjs pull                         fetch and decrypt the team's records
 //   node beaket.mjs index                        list the team's newest records
-//   node beaket.mjs session-start                for the SessionStart hook: pull, then print the index
+//   node beaket.mjs verify                       the SHA-256 of this script, and whether every copy of it in the plugin is the same
+//   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index (--json for GitHub Copilot)
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, userInfo } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_SERVER = "https://stg.beaket.com";
@@ -535,6 +536,22 @@ try {
       const why = error.status === 401 ? "this member was removed from the team, or the team is gone" : error.message;
       console.log(`Could not pull (${why}). The records of the last pull are in ${cacheDir(config)}.`);
     }
+  } else if (cmd === "verify") {
+    // Each skill carries a copy of bin/beaket.mjs in its scripts/ (ADR-021); show that they are one script.
+    const here = dirname(self);
+    const root = basename(here) === "scripts" ? join(here, "..", "..", "..") : join(here, "..");
+    const copies = [join(root, "bin", "beaket.mjs")];
+    if (existsSync(join(root, "skills"))) for (const s of readdirSync(join(root, "skills"))) copies.push(join(root, "skills", s, "scripts", "beaket.mjs"));
+    const sha = (f) => createHash("sha256").update(readFileSync(f)).digest("hex");
+    const mine = sha(self);
+    console.log(`This script: ${self}\nSHA-256: ${mine}`);
+    let differ = 0;
+    for (const f of copies.filter(existsSync)) {
+      const same = sha(f) === mine;
+      if (!same) differ++;
+      console.log(`${same ? "same" : "DIFFERENT"}  ${f}`);
+    }
+    if (differ) process.exit(1);
   } else if (cmd === "index") {
     const config = needTeam();
     for (const r of index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}`);
@@ -549,14 +566,14 @@ try {
     }
     const list = index(config);
     if (list.length === 0) process.exit(0);
-    console.log(
-      [
-        `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
-        ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}`),
-        "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone. When a request goes against a record, say so in a few lines before doing anything: the record's title, date and file name, the decision, and the reason in the decider's words with who they talked with, with the record's source links; then ask. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
-        `To share a new record: node ${self} push <file>.`,
-      ].join("\n"),
-    );
+    const text = [
+      `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
+      ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}`),
+      "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone. When a request goes against a record, say so in a few lines before doing anything: the record's title, date and file name, the decision, and the reason in the decider's words with who they talked with, with the record's source links; then ask. Say what the record covers and what it does not: a case it does not name (another variant, product or scope) is not settled by it, so do not call it decided; say it is open and who decided the record, and ask. When someone asks to reopen a decision or switch to another option, give the reason the record has for each option it rejected, not only the one they name, and who to talk to before writing a proposal. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
+      `To share a new record: node ${self} push <file>.`,
+    ].join("\n");
+    // Claude Code and Codex add plain stdout to the session; GitHub Copilot reads only JSON {additionalContext}.
+    console.log(sub === "--json" ? JSON.stringify({ additionalContext: text }) : text);
   } else {
     const lines = readFileSync(self, "utf8").split("\n").slice(1);
     console.log(lines.slice(0, lines.findIndex((l) => !l.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));

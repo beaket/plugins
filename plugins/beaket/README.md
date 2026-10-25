@@ -7,12 +7,19 @@ Cut the context of one decision down to what it needs, keep the decision as a re
 - **decision-record**: say what you chose, why and who you talked with; it drafts the record from the brief, you confirm, and it writes `decisions/<date>-<slug>.md`.
 - **team**: make or join a Beaket team, invite someone, share or withdraw records, and answer what leaves your machine.
 
+## Install
+In Claude Code 2.1.275 or later:
+```
+/plugin install beaket --marketplace beaket/plugins
+```
+In earlier versions, `/plugin marketplace add beaket/plugins`, then `/plugin install beaket@beaket`.
+
 ## Beta
 Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `beaket.com` later. Set another server with `team create --server <URL>` or `BEAKET_URL`.
 
 ## What leaves your machine
 - **Your sources.** The skills read them through the connectors your Claude Code already has, with your own access. What they read goes to the model as in any Claude Code session. The plugin sends none of it to Beaket; it has no connector or server of its own for sources.
-- **Your records, only in a team, only when you confirm.** `bin/beaket.mjs` encrypts a record on your machine before it leaves:
+- **Your records, only in a team, only when you confirm.** `bin/beaket.mjs`, of which each skill carries a copy in its `scripts/`, encrypts a record on your machine before it leaves:
   - The team key (32 random bytes) is made on a member's machine and never leaves members' machines unwrapped. `hkdfKey` turns it, through HKDF-SHA-256, into a key for records, one for member cards and one for the previous team key.
   - `sealRecord`: the file name and text are encrypted with AES-256-GCM and a random nonce, bound to the team, the record id and the key's epoch.
   - Beaket receives only that ciphertext, the nonce and the epoch.
@@ -25,4 +32,4 @@ Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `be
 - **You do not have to trust Beaket's server** to keep records secret: it never receives a team key. You rely on it to refuse a removed member the records pushed before their removal.
 - **Private records** carry `<!-- beaket-private -->` and `push` refuses them.
 
-This script is the whole client: what leaves your machine for Beaket is what it sends, and you can read it.
+This script is the whole client: what leaves your machine for Beaket is what it sends, and you can read it. Each skill carries a copy of it in its `scripts/`, so that every tool finds it; `node bin/beaket.mjs verify` shows that all copies are the same.
