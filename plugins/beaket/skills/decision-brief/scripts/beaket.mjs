@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Beaket team records: share decision records with your team, end-to-end encrypted.
 // Beaket keeps them as ciphertext and never receives a key. Each member has their own.
+// Beside each record Beaket keeps its passport in the clear: a label of a few words, the owner,
+// the dates, a state, the links and who answered what about it. Never the text.
 //
 //   node beaket.mjs team create [--server URL] [--name N]   make a team; you are its first manager
 //   node beaket.mjs team invite [--manager]                 invite one person; the code goes to the clipboard and a private file
@@ -8,13 +10,18 @@
 //   node beaket.mjs team members                            who is in the team, with their role
 //   node beaket.mjs team remove <name or id>                remove one member (managers): they are refused at once, and new records use a new key
 //   node beaket.mjs team log [--all]                        who joined, pushed, pulled, withdrew and removed what, and when
+//   node beaket.mjs team reader [--print]                   make a read key for another AI (managers): it reads only the passports, through the window
+//   node beaket.mjs team readers                            the team's read keys: who made each, when it was last used, whether it was revoked
+//   node beaket.mjs team revoke-reader <id>                 revoke a read key (managers): the window refuses it at once
 //
 // An invite code opens the team's key once, within a day. It never goes to standard output unless you
 // ask with --print, so that it stays out of an AI assistant's conversation, which is sent to its model.
 // The default server, stg.beaket.com, is Beaket's beta; Beaket will run on beaket.com later.
 //   node beaket.mjs status                       is this machine in a team, and where are its records
 //   node beaket.mjs paths                        the config, cache and private folders of this machine
-//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private)
+//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport
+//   node beaket.mjs answer <file or id> <answer>   question | unchanged | changed: answer about a decision; Beaket keeps who, what and when
+//   node beaket.mjs passports                    the team's passports: label, owner, dates, state, links and trail, as Beaket holds them
 //   node beaket.mjs unshared [folder]            list the records in decisions/ not yet shared, and the private ones
 //   node beaket.mjs remove <file>                withdraw a shared record
 //   node beaket.mjs pull                         fetch and decrypt the team's records
@@ -36,6 +43,7 @@ const CONFIG_DIR = process.env.BEAKET_CONFIG_DIR ?? join(homedir(), ".config", "
 const CONFIG = join(CONFIG_DIR, "team.json");
 const CACHE_ROOT = process.env.BEAKET_CACHE_DIR ?? join(homedir(), ".cache", "beaket", "teams");
 const JOIN_FILE = join(CONFIG_DIR, "join-code");
+const READER_FILE = join(CONFIG_DIR, "reader-key");
 // Records the person keeps to themselves, outside any repository.
 const PRIVATE_DIR = join(CONFIG_DIR, "private");
 const ID_LINE = /^<!-- beaket-record: ([0-9a-f-]{36}) -->\n/;
@@ -304,6 +312,69 @@ function findCached(dir, id) {
   return null;
 }
 
+// --- Passports (docs/specs/passport.md) ---
+// What Beaket keeps of a record in the clear, read from the record's own lines: a label of a few
+// words (the `Label:` line, or the file name's words), the owner, the dates, and the links of its
+// Sources, Rests on and Supersedes. Nothing of Decision, Why or Rejected.
+
+const MAX_LABEL = 80;
+const line = (text, names) => new RegExp(`^- (?:${names.join("|")}):\\s*(.+?)\\s*$`, "m").exec(text)?.[1];
+const day = (s) => (s && /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : undefined);
+
+function section(text, names) {
+  const heading = new RegExp(`^## (?:${names.join("|")})\\s*$`, "m").exec(text);
+  if (!heading) return "";
+  const rest = text.slice(heading.index + heading[0].length);
+  const next = /^## /m.exec(rest);
+  return next ? rest.slice(0, next.index) : rest;
+}
+
+// Each link of a section: a URL, or a path such as decisions/x.md or docs/adr/ADR-027.md, or a record id.
+function linksOf(block) {
+  const found = new Set();
+  for (const m of block.matchAll(/https?:\/\/[^\s)>\]]+/g)) found.add(m[0].replace(/[.,;:]+$/, ""));
+  for (const m of block.matchAll(/(?:^|[\s(\[])((?:decisions|docs)\/[^\s)\]]+\.md)/g)) found.add(m[1]);
+  for (const m of block.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g)) found.add(m[0]);
+  return [...found].map((href) => href.slice(0, 500));
+}
+
+function passportOf(file, text) {
+  const title = /^# (.+)$/m.exec(text)?.[1] ?? basename(file, ".md");
+  const slugWords = basename(file, ".md").replace(/^\d{4}-\d{2}-\d{2}-/, "").replace(/-/g, " ");
+  const label = (line(text, ["Label", "라벨", "ラベル"]) ?? slugWords).slice(0, MAX_LABEL);
+  const owner = (line(text, ["Decided by", "결정자", "決定者", "決めた人"]) ?? userInfo().username).slice(0, 80);
+  const decided = day(line(text, ["Date", "날짜", "日付"])) ?? new Date().toISOString().slice(0, 10);
+  const reviewBy = day(line(text, ["Review by", "다시 볼 날", "見直す日"])) ?? null;
+  const links = [
+    ...linksOf(section(text, ["Sources", "출처", "ソース", "参照"])).map((href) => ({ rel: "source", href })),
+    ...linksOf(section(text, ["Rests on", "기대는 결정", "前提とする決定"])).map((href) => ({ rel: "rests-on", href })),
+    ...linksOf(line(text, ["Supersedes", "대체하는 결정", "置き換える決定"]) ?? "").map((href) => ({ rel: "supersedes", href })),
+  ].slice(0, 50);
+  return { title, passport: { label, owner, decided, reviewBy, links } };
+}
+
+const PASSPORTS = (c) => join(cacheDir(c), "passports.json");
+const readPassports = (c) => (existsSync(PASSPORTS(c)) ? JSON.parse(readFileSync(PASSPORTS(c), "utf8")) : {});
+
+// The team's passports changed since the last pull, kept beside the records as passports.json.
+async function pullPassports(config, timeoutMs) {
+  const held = readPassports(config);
+  let after = config.passportCursor ?? 0;
+  for (;;) {
+    const page = await call(config, "GET", `/api/teams/${config.team}/passports?after=${after}`, null, timeoutMs);
+    for (const p of page.passports) {
+      held[p.id] = p;
+      after = p.seq;
+    }
+    if (!page.more) break;
+  }
+  mkdirSync(cacheDir(config), { recursive: true });
+  writeFileSync(PASSPORTS(config), JSON.stringify(held, null, 2) + "\n");
+  const fresh = { ...config, passportCursor: after };
+  writeConfig(fresh);
+  return fresh;
+}
+
 async function pull(start, timeoutMs) {
   let config = start;
   const dir = cacheDir(config);
@@ -327,19 +398,23 @@ async function pull(start, timeoutMs) {
   }
   config = { ...config, cursor: after };
   writeConfig(config);
+  config = await pullPassports(config, timeoutMs);
   return { changed, dir, config };
 }
 
 function index(config) {
   const dir = cacheDir(config);
   if (!existsSync(dir)) return [];
+  const passports = readPassports(config);
   return readdirSync(dir)
     .filter((f) => f.endsWith(".md"))
     .map((f) => {
       const text = readFileSync(join(dir, f), "utf8");
       const title = /^# (.+)$/m.exec(text)?.[1] ?? f;
-      const date = /^- (?:Date|날짜):\s*(\S+)/m.exec(text)?.[1] ?? statSync(join(dir, f)).mtime.toISOString().slice(0, 10);
-      return { file: f, title, date };
+      const date = /^- (?:Date|날짜|日付):\s*(\S+)/m.exec(text)?.[1] ?? statSync(join(dir, f)).mtime.toISOString().slice(0, 10);
+      const id = ID_LINE.exec(text)?.[1];
+      const state = (id && passports[id]?.state) ?? "valid";
+      return { file: f, title, date, state };
     })
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, INDEX_SIZE);
@@ -486,16 +561,59 @@ try {
       }
       if (e.action === "joined") return "";
       if (e.action === "removed") return names[e.subject] ?? e.subject;
-      if (e.action === "pushed" || e.action === "withdrew") return titles[e.subject] ?? `record ${e.subject}`;
+      if (e.action === "pushed" || e.action === "withdrew" || e.action === "passport") return titles[e.subject] ?? `record ${e.subject}`;
+      if (e.action === "answered") {
+        const [id, answer] = (e.subject ?? "").split(" ");
+        return `${answer} about ${titles[id] ?? `record ${id}`}`;
+      }
       if (e.action === "pulled") return `changes ${e.subject.replace("-", " to ")}`;
+      if (e.action === "window") return (e.subject ?? "").split(" ")[1] ?? "";
       return e.subject ?? "";
     };
     const shown = rest.includes("--all") ? entries : entries.slice(-50);
     for (const e of shown) {
       const subject = describe(e);
-      console.log(`${e.at.slice(0, 16).replace("T", " ")} UTC  ${names[e.member] ?? e.member}  ${e.action}${subject ? ` ${subject}` : ""}`);
+      const by = names[e.member] ?? (e.action === "window" ? `read key ${e.member}` : e.member);
+      console.log(`${e.at.slice(0, 16).replace("T", " ")} UTC  ${by}  ${e.action}${subject ? ` ${subject}` : ""}`);
     }
     if (shown.length < entries.length) console.log(`(${entries.length - shown.length} earlier line(s); --all shows them)`);
+  } else if (cmd === "team" && sub === "reader") {
+    // The window (docs/specs/window.md): a read key for another vendor's AI, which gets passports and links, never text.
+    const config = needTeam();
+    if (config.role !== "manager") throw new Error("Only a manager of the team can make a read key. Ask one of them.");
+    const id = randomId();
+    const token = b64url(random(32));
+    const made = await call(config, "POST", `/api/teams/${config.team}/readers`, { id, tokenHash: sha256(token) });
+    const key = `${id}.${token}`;
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(READER_FILE, key + "\n", { mode: 0o600 });
+    chmodSync(READER_FILE, 0o600);
+    const copied = rest.includes("--print") ? false : toClipboard(key);
+    const url = `${config.server}${made.url}`;
+    console.log(
+      [
+        `Made read key ${id}. It reads this team's passports (label, owner, dates, state, links), never a record's text, and can change nothing.`,
+        `The window: ${url} (MCP over streamable HTTP). The other tool sends the header \`Authorization: Bearer <key>\`.`,
+        rest.includes("--print") ? `The key: ${key}` : `The key is ${copied ? "on your clipboard and " : ""}in ${READER_FILE}, readable only by you; paste it into the other tool's settings, not into a conversation.`,
+        `For example, in Claude Code: claude mcp add --transport http beaket-decisions ${url} --header "Authorization: Bearer <key>"`,
+        `Revoke it with \`team revoke-reader ${id}\`.`,
+      ].join("\n"),
+    );
+  } else if (cmd === "team" && sub === "readers") {
+    const config = await refreshKeys(needTeam());
+    const names = Object.fromEntries((await members(config)).map((m) => [m.id, m.name]));
+    const { readers } = await call(config, "GET", `/api/teams/${config.team}/readers`);
+    if (readers.length === 0) console.log("The team has no read keys.");
+    for (const r of readers) {
+      const state = r.revokedAt ? `revoked ${r.revokedAt.slice(0, 10)}` : r.usedAt ? `last used ${r.usedAt.slice(0, 16).replace("T", " ")} UTC` : "never used";
+      console.log(`- ${r.id}: made by ${names[r.createdBy] ?? r.createdBy} on ${r.createdAt.slice(0, 10)}, ${state}`);
+    }
+  } else if (cmd === "team" && sub === "revoke-reader") {
+    const config = needTeam();
+    if (config.role !== "manager") throw new Error("Only a manager of the team can revoke a read key. Ask one of them.");
+    if (!rest[0]) throw new Error("Name the read key to revoke, by id (see `team readers`).");
+    await call(config, "DELETE", `/api/teams/${config.team}/readers/${rest[0]}`);
+    console.log(`Revoked read key ${rest[0]}. The window refuses it from now on.`);
   } else if (cmd === "status") {
     const config = needTeam();
     console.log(`Team ${config.team} at ${config.server}, as ${config.name} (${config.role}).${onBeta(config.server)} Records: ${cacheDir(config)}. Script: ${self}`);
@@ -505,9 +623,28 @@ try {
       const { id, text } = recordId(file);
       const pushed = await pushRecord(config, id, basename(file), text);
       config = pushed.config;
-      console.log(`Shared ${file} (record ${id}, change ${pushed.seq}).`);
+      const { passport } = passportOf(file, text);
+      const stamped = await call(config, "PUT", `/api/teams/${config.team}/passports/${id}`, passport);
+      console.log(`Shared ${file} (record ${id}, change ${pushed.seq}). Its passport, in the clear: "${passport.label}", ${passport.owner}, ${passport.decided}, ${passport.links.length} link(s), ${stamped.state}.`);
     }
     await pull(config);
+  } else if (cmd === "answer") {
+    const config = needTeam();
+    const answer = rest[0];
+    if (!sub || !["question", "unchanged", "changed"].includes(answer)) throw new Error("Usage: answer <record file or id> question|unchanged|changed");
+    const id = existsSync(sub) ? ID_LINE.exec(readFileSync(sub, "utf8"))?.[1] : sub;
+    if (!id) throw new Error(`${sub} was never shared, so it has no passport. Share it first (push).`);
+    const got = await call(config, "POST", `/api/teams/${config.team}/passports/${id}`, { answer });
+    await pullPassports(config);
+    console.log(`Answered "${answer}" about record ${id}; its state is now ${got.state}. Beaket keeps who answered, what and when, and none of the words.`);
+  } else if (cmd === "passports") {
+    const config = await pullPassports(needTeam());
+    const held = Object.values(readPassports(config)).sort((a, b) => b.seq - a.seq);
+    if (held.length === 0) console.log("The team has no passports yet.");
+    for (const p of held) {
+      const trail = p.trail.length ? `; ${p.trail.map((a) => `${a.answer} ${a.at.slice(0, 10)}`).join(", ")}` : "";
+      console.log(`- ${p.state}: "${p.label}" — ${p.owner}, ${p.decided}${p.reviewBy ? `, review by ${p.reviewBy}` : ""}, ${p.links.length} link(s), record ${p.id}${trail}`);
+    }
   } else if (cmd === "paths") {
     console.log(`config: ${CONFIG}\ncache: ${CACHE_ROOT}\nprivate: ${PRIVATE_DIR}`);
   } else if (cmd === "unshared") {
@@ -554,7 +691,7 @@ try {
     if (differ) process.exit(1);
   } else if (cmd === "index") {
     const config = needTeam();
-    for (const r of index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}`);
+    for (const r of index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
   } else if (cmd === "session-start") {
     const config = readConfig();
     if (!config?.member) process.exit(0);
@@ -568,8 +705,10 @@ try {
     if (list.length === 0) process.exit(0);
     const text = [
       `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
-      ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}`),
-      "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone. When a request goes against a record, say so in a few lines before doing anything: the record's title, date and file name, the decision, and the reason in the decider's words with who they talked with, with the record's source links; then ask. Say what the record covers and what it does not: a case it does not name (another variant, product or scope) is not settled by it, so do not call it decided; say it is open and who decided the record, and ask. When someone asks to reopen a decision or switch to another option, give the reason the record has for each option it rejected, not only the one they name, and who to talk to before writing a proposal. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
+      ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`),
+      "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone.",
+      `When a request goes against a record, stop before doing anything and say so in at most five lines: the record's title, date and file name, its decision, and the reason in the decider's words, with one source link. Then ask the person one question only: did the premise change? Check the record's Premises first; a premise the world no longer meets is the contradiction to name. If they say yes, update the record (the change, the date and who, under Changes), share it (node ${self} push <file>) and run node ${self} answer <file> changed; if they say no, run node ${self} answer <file> unchanged and drop or change the action. A record marked [questioned] or [changed] above has an open question or a changed premise: read its Changes before relying on it.`,
+      "Say what a record covers and what it does not: a case it does not name (another variant, product or scope) is not settled by it; say it is open and who decided the record, and ask. When someone asks to reopen a decision or switch to another option, give the reason the record has for each option it rejected, not only the one they name, and who to talk to before writing a proposal. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
       `To share a new record: node ${self} push <file>.`,
     ].join("\n");
     // Claude Code and Codex add plain stdout to the session; GitHub Copilot reads only JSON {additionalContext}.
