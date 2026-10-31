@@ -10,6 +10,9 @@
 //   node beaket.mjs team members                            who is in the team, with their role
 //   node beaket.mjs team remove <name or id>                remove one member (managers): they are refused at once, and new records use a new key
 //   node beaket.mjs team log [--all]                        who joined, pushed, pulled, withdrew and removed what, and when
+//   node beaket.mjs team reader [--print]                   make a read key for another AI (managers): it reads only the passports, through the window
+//   node beaket.mjs team readers                            the team's read keys: who made each, when it was last used, whether it was revoked
+//   node beaket.mjs team revoke-reader <id>                 revoke a read key (managers): the window refuses it at once
 //
 // An invite code opens the team's key once, within a day. It never goes to standard output unless you
 // ask with --print, so that it stays out of an AI assistant's conversation, which is sent to its model.
@@ -40,6 +43,7 @@ const CONFIG_DIR = process.env.BEAKET_CONFIG_DIR ?? join(homedir(), ".config", "
 const CONFIG = join(CONFIG_DIR, "team.json");
 const CACHE_ROOT = process.env.BEAKET_CACHE_DIR ?? join(homedir(), ".cache", "beaket", "teams");
 const JOIN_FILE = join(CONFIG_DIR, "join-code");
+const READER_FILE = join(CONFIG_DIR, "reader-key");
 // Records the person keeps to themselves, outside any repository.
 const PRIVATE_DIR = join(CONFIG_DIR, "private");
 const ID_LINE = /^<!-- beaket-record: ([0-9a-f-]{36}) -->\n/;
@@ -563,14 +567,53 @@ try {
         return `${answer} about ${titles[id] ?? `record ${id}`}`;
       }
       if (e.action === "pulled") return `changes ${e.subject.replace("-", " to ")}`;
+      if (e.action === "window") return (e.subject ?? "").split(" ")[1] ?? "";
       return e.subject ?? "";
     };
     const shown = rest.includes("--all") ? entries : entries.slice(-50);
     for (const e of shown) {
       const subject = describe(e);
-      console.log(`${e.at.slice(0, 16).replace("T", " ")} UTC  ${names[e.member] ?? e.member}  ${e.action}${subject ? ` ${subject}` : ""}`);
+      const by = names[e.member] ?? (e.action === "window" ? `read key ${e.member}` : e.member);
+      console.log(`${e.at.slice(0, 16).replace("T", " ")} UTC  ${by}  ${e.action}${subject ? ` ${subject}` : ""}`);
     }
     if (shown.length < entries.length) console.log(`(${entries.length - shown.length} earlier line(s); --all shows them)`);
+  } else if (cmd === "team" && sub === "reader") {
+    // The window (docs/specs/window.md): a read key for another vendor's AI, which gets passports and links, never text.
+    const config = needTeam();
+    if (config.role !== "manager") throw new Error("Only a manager of the team can make a read key. Ask one of them.");
+    const id = randomId();
+    const token = b64url(random(32));
+    const made = await call(config, "POST", `/api/teams/${config.team}/readers`, { id, tokenHash: sha256(token) });
+    const key = `${id}.${token}`;
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(READER_FILE, key + "\n", { mode: 0o600 });
+    chmodSync(READER_FILE, 0o600);
+    const copied = rest.includes("--print") ? false : toClipboard(key);
+    const url = `${config.server}${made.url}`;
+    console.log(
+      [
+        `Made read key ${id}. It reads this team's passports (label, owner, dates, state, links), never a record's text, and can change nothing.`,
+        `The window: ${url} (MCP over streamable HTTP). The other tool sends the header \`Authorization: Bearer <key>\`.`,
+        rest.includes("--print") ? `The key: ${key}` : `The key is ${copied ? "on your clipboard and " : ""}in ${READER_FILE}, readable only by you; paste it into the other tool's settings, not into a conversation.`,
+        `For example, in Claude Code: claude mcp add --transport http beaket-decisions ${url} --header "Authorization: Bearer <key>"`,
+        `Revoke it with \`team revoke-reader ${id}\`.`,
+      ].join("\n"),
+    );
+  } else if (cmd === "team" && sub === "readers") {
+    const config = await refreshKeys(needTeam());
+    const names = Object.fromEntries((await members(config)).map((m) => [m.id, m.name]));
+    const { readers } = await call(config, "GET", `/api/teams/${config.team}/readers`);
+    if (readers.length === 0) console.log("The team has no read keys.");
+    for (const r of readers) {
+      const state = r.revokedAt ? `revoked ${r.revokedAt.slice(0, 10)}` : r.usedAt ? `last used ${r.usedAt.slice(0, 16).replace("T", " ")} UTC` : "never used";
+      console.log(`- ${r.id}: made by ${names[r.createdBy] ?? r.createdBy} on ${r.createdAt.slice(0, 10)}, ${state}`);
+    }
+  } else if (cmd === "team" && sub === "revoke-reader") {
+    const config = needTeam();
+    if (config.role !== "manager") throw new Error("Only a manager of the team can revoke a read key. Ask one of them.");
+    if (!rest[0]) throw new Error("Name the read key to revoke, by id (see `team readers`).");
+    await call(config, "DELETE", `/api/teams/${config.team}/readers/${rest[0]}`);
+    console.log(`Revoked read key ${rest[0]}. The window refuses it from now on.`);
   } else if (cmd === "status") {
     const config = needTeam();
     console.log(`Team ${config.team} at ${config.server}, as ${config.name} (${config.role}).${onBeta(config.server)} Records: ${cacheDir(config)}. Script: ${self}`);
