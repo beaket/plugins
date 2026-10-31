@@ -532,7 +532,7 @@ try {
     await refreshKeys(config);
     console.log(
       `Removed ${gone.name}. Beaket refuses them from now on, and records pushed from now on use a new key that only the ${staying.length} remaining member(s) have. ` +
-        "They keep the copies they already pulled. Invites not yet used were cancelled.",
+        "They keep the copies they already pulled. Invites not yet used were cancelled, and the read keys they made were revoked.",
     );
   } else if (cmd === "team" && sub === "log") {
     const config = await refreshKeys(needTeam());
