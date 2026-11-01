@@ -27,7 +27,7 @@
 //   node beaket.mjs pull                         fetch and decrypt the team's records
 //   node beaket.mjs index                        list the team's newest records
 //   node beaket.mjs verify                       the SHA-256 of this script, and whether every copy of it in the plugin is the same
-//   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index (--json for GitHub Copilot)
+//   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index and the rules, the offer to record an answer included (--json for GitHub Copilot)
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -702,14 +702,21 @@ try {
       note = " (Beaket could not be reached; these are from the last pull)";
     }
     const list = index(config);
-    if (list.length === 0) process.exit(0);
+    const offer = `When the person answers a choice you put to them (two or more options, a recommendation they take or turn down) and the choice changes what gets built or written, offer once, in one line at the end of your answer, to keep it as a team decision with the decision-record skill, which drafts it from the exchange: the option chosen, their words as the reason, the options not chosen, what the question left undecided. Never offer for a go-ahead, a yes to continue, a correction of your work or a question of fact, and never twice for the same choice: if they decline or do not answer, do not ask again.`;
+    const share = `To share a new record: node ${self} push <file>.`;
+    if (list.length === 0) {
+      const text = [`This machine is in a Beaket team with no decision records yet${note}.`, offer, share].join("\n");
+      console.log(sub === "--json" ? JSON.stringify({ additionalContext: text }) : text);
+      process.exit(0);
+    }
     const text = [
       `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
       ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`),
       "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone.",
       `When a request goes against a record, stop before doing anything and say so in at most five lines: the record's title, date and file name, its decision, and the reason in the decider's words, with one source link. Then ask the person one question only: did the premise change? Check the record's Premises first; a premise the world no longer meets is the contradiction to name. If they say yes, update the record (the change, the date and who, under Changes), share it (node ${self} push <file>) and run node ${self} answer <file> changed; if they say no, run node ${self} answer <file> unchanged and drop or change the action. A record marked [questioned] or [changed] above has an open question or a changed premise: read its Changes before relying on it.`,
       "Say what a record covers and what it does not: a case it does not name (another variant, product or scope) is not settled by it; say it is open and who decided the record, and ask. When someone asks to reopen a decision or switch to another option, give the reason the record has for each option it rejected, not only the one they name, and who to talk to before writing a proposal. When a request follows a record, mention it in one line at most. Mark anything not from a record or the team's sources as your own general knowledge, and before citing a document as current, check it is not superseded or from a cancelled project.",
-      `To share a new record: node ${self} push <file>.`,
+      offer,
+      share,
     ].join("\n");
     // Claude Code and Codex add plain stdout to the session; GitHub Copilot reads only JSON {additionalContext}.
     console.log(sub === "--json" ? JSON.stringify({ additionalContext: text }) : text);
