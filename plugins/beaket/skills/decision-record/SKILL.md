@@ -1,6 +1,6 @@
 ---
 name: decision-record
-description: Keep a decision the person has just made as a record their team can read later: what was chosen, why, who decided and who was consulted, what was rejected, what is still open, and the sources. Use when the person says what they decided (for example "we're going with SQS", "decided: Kafka, after talking with the platform lead", "record this decision"), in any language, above all after a decision brief.
+description: Keep a decision the person has just made as a record their team can read later: what was chosen, why, who decided and who was consulted, what was rejected, what is still open, and the sources. Use when the person says what they decided (for example "we're going with SQS", "decided: Kafka, after talking with the platform lead", "record this decision"), or accepts the one-line offer to keep an answer they gave to a choice the assistant put to them, in any language, above all after a decision brief.
 ---
 
 # Decision record
@@ -15,6 +15,7 @@ What decides a decision is often never written down: a talk with someone, a tabl
 
 ## Steps
 1. **What you have.** The decision brief in this conversation, if there is one, and what the person just said. With no brief here, find the documents, issues and threads the person's words refer to (the options, numbers and people they named) in the sources and the decision records, so that Rejected, Constraints, Still open and Sources can be linked. Search with the subject being decided (for example ingress, order events), not only the options' names: a constraint (a deadline, a freeze, an audit, a security or legal rule) is often written without any option's name. Open the decision's issue and every issue it links: an agreement made in a linked issue often binds how the decision is carried out.
+   **From an answer to a choice.** When the record comes from the person answering a choice this session put to them (the SessionStart hook says when to offer: once, in one line, only for a choice among options that changes what gets built or written, never for a go-ahead or a correction), the exchange is the source: the option they chose is the Decision, their words when they chose it are the Why, the options you put to them and they did not choose are Rejected, with your reason against each only when you gave one, what your question left undecided is Still open, and under Talked with name this session (the tool and what it asked), not a person. Add nothing they did not say; when they answered with one word ("the first", "as you suggest"), the Why is empty and the draft says so in a statement, not a question.
 2. **Ask once, only for what is missing.** The record needs: the option chosen, why in the person's words, and who they talked with. The decider is the person unless they name someone else; do not ask for it. If the choice, the reason or the people are missing, ask for all the missing ones in one short question, and never ask again for what they already said. Do not ask for anything else.
 3. **Draft**, leaving out a section with nothing in it:
 
