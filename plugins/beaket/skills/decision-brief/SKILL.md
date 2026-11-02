@@ -22,7 +22,7 @@ The person has too much context for one decision, spread over many tools, and mo
 - Every line of the brief links to its source. If you cannot link a line, leave it out.
 - A discussion is not a decision. Write "agreed" only when the source shows two or more people agreeing, and name them; one person's remark goes under Options or Open with their name. Mark anything you inferred as your inference.
 - AI meeting notes (Gemini and the like) are not a record of what was decided, their "Decisions" section included: check each line you use against the meeting's transcript, never put a line found only in AI notes under Agreed, and mark it at the end of its line as (<"AI notes, not in the transcript" in the brief's language>), never in English in a brief of another language.
-- When the sources do not mention something (a date, a customer, a price), write that the sources do not say it, not that it does not exist. Before telling the person a source does not say something they stated, search for it.
+- When the sources do not mention something (a date, a customer, a price), write that the sources do not say it, not that it does not exist. Tell apart what the sources lack from what they show nothing against: "the sources show nothing that stops it on wms-prod" is not "whether it runs on wms-prod is not in the sources", and when the sources rule out only another option there, say which. Before telling the person a source does not say something they stated, search for it.
 - Anything you know from outside the sources (a vendor's features, a law, a cloud's regions) is not in the brief; if the person asks, say it is general knowledge, not from their team, and may be out of date.
 - Address the person as "you". Find who they are from `git config user.name` or how they sign, so that you never write about them in the third person.
 - Do not recommend an option. The person decides.
@@ -50,7 +50,7 @@ The person has too much context for one decision, spread over many tools, and mo
 # <the decision, one line>
 
 ## <"Comes down to" in the brief's language>
-<the one question the choice comes down to: one clause on one line, with no "if" and no "or", naming only the options in the title and no choice the sources do not hold, answerable by yes or no or by a name or a date, no option named as better; marked as the brief's reading. "Can you finish the freeze ADR, the alias removal and the Korean check before November 26?", not "if nothing is met by waiting, will you do the four things before a November Thursday, or defer until the stretch goal is in the gate?">
+<the one question the choice comes down to: one clause on one line, with no "if" and no "or", naming only the options in the title and no choice the sources do not hold, answerable by yes or no, by a name or a date, or by one of the options; a question the person can answer, never one only someone else can; no option named as better; marked as the brief's reading. "Which of the two can SRE take on call?" or "Can you finish the freeze ADR, the alias removal and the Korean check before November 26?", not "Can SRE name an on-call owner before November 30?" (that is SRE's to answer) nor "if nothing is met by waiting, will you do the four things before a November Thursday, or defer until the stretch goal is in the gate?">
 
 <"Because the options differ on" in the brief's language>:
 - <a condition the options meet differently, one bare clause with no qualifier, no state and no number beyond the one that defines it: "have a freeze ADR", "be merged by you"> — <who set it> [link]
@@ -59,7 +59,7 @@ The person has too much context for one decision, spread over many tools, and mo
 **<option, one line, bold; not a numbered list, nothing before it>**
 - <"gives" in the brief's language>: <what choosing it gets the team, in one line> — <who said it> [link]
 - <"costs" in the brief's language>: <what it costs or requires: money, people, time, a thing to build> — <who said it> [link]
-- <the words of a condition, shortened, never its number>: <met, not met, or not in the sources, with the number or fact that shows it> — <who said it> [link]
+- <the words of a condition, shortened, never its number>: <met, not met, nothing against it in the sources, or not in the sources, with the number or fact that shows it; "nothing against it" when the sources name no bar for this option and rule out only another> — <who said it> [link]
 
 ## <"Agreed" in the brief's language>
 - <what> — <who agreed> [link]
