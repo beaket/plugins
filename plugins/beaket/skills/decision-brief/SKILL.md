@@ -4,6 +4,7 @@ description: Make a one-page brief for a decision the person must make, from wha
 context: fork
 background: false
 model: claude-sonnet-5-5
+allowed-tools: Bash(node */skills/decision-brief/scripts/beaket.mjs pull)
 ---
 
 # Decision brief
@@ -31,7 +32,7 @@ The person has too much context for one decision, spread over many tools, and mo
 
 ## Steps
 1. **The question.** Restate the decision in one line, with its options if they are known. Take the search terms from it: the subject being decided (for example order events, pipeline), and each option with its synonyms and product names (for example Kafka, MSK, SQS, SNS, EventBridge). A constraint is often written without any option's name, so also search the subject with words for deadlines, freezes, budgets, staffing, requirements, security, compliance, audits and regulation, and read the channels and spaces whose names point to one of these (for example #security-notice), in each language the team writes in. If the person named channels, Jira keys, documents or a time range, use them; if not, search broadly and say so. Do not wait for hints.
-2. **Find.** First read the team's decision records. If the person is in a Beaket team, run `node <skill>/scripts/beaket.mjs pull` (`<skill>` is this skill's folder, the one that holds this SKILL.md) and read the files in the folder it names. If the pull fails, read the folder anyway (it holds the last pull) and say at the top of the brief that the team's newest records may be missing, and why. Also read the `decisions/` folder at the root of the current git repository, or the folder the person named. A record is a decision already made; use it under Agreed or Past, linked to its file, with its reason and who the decider talked with. A source that contradicts a record (an older document, a draft, someone's comment) is not an open question: say under Agreed that it contradicts the record, linking both. Then, in each source you have, search with those terms: Slack threads, Jira issues and their comments, Confluence and Notion pages, Google Meet transcripts and Gemini notes in Google Drive, GitHub issues and pull requests. Open every issue under the same epic as, or linked from, the ones you found, before you write, and the parent page of each page you rely on: an agreement made in a sibling issue binds the decision, and whether a project was cancelled or a page superseded is often written only there. If you could not open one, say which under Read; do not leave it unopened to save time. Keep the list of what you searched, where, with which terms and over what time.
+2. **Find.** Every source below is read on every brief, however small the decision looks, and in this order; none is skipped for being unlikely to hold anything. Each one ends up under Read as searched, or as not searched with the one reason allowed: the tool is not in this session, or it refused. "Did not query" and "did not run" are not reasons: if you have the tool, you use it. First read the team's decision records. If the person is in a Beaket team, run `node <skill>/scripts/beaket.mjs pull` (`<skill>` is this skill's folder, the one that holds this SKILL.md) and read the files in the folder it names. If the pull fails, read the folder anyway (it holds the last pull) and say at the top of the brief that the team's newest records may be missing, and why. Also read the `decisions/` folder at the root of the current git repository, or the folder the person named. A record is a decision already made; use it under Agreed or Past, linked to its file, with its reason and who the decider talked with. A source that contradicts a record (an older document, a draft, someone's comment) is not an open question: say under Agreed that it contradicts the record, linking both. Then, in each source you have, search with those terms: Slack threads, Jira issues and their comments, Confluence and Notion pages, Google Meet transcripts and Gemini notes in Google Drive, GitHub issues and pull requests. Open every issue under the same epic as, or linked from, the ones you found, before you write, and the parent page of each page you rely on: an agreement made in a sibling issue binds the decision, and whether a project was cancelled or a page superseded is often written only there. If you could not open one, say which under Read; do not leave it unopened to save time. Keep the list of what you searched, where, with which terms and over what time.
 3. **Read in parallel.** When there is more than a handful of items, give each source or batch to a subagent that returns only the excerpts that bear on the decision, each with its link, author and date, and a count of what it read and dropped by kind. Keep the raw text out of your own context.
 4. **Drop the noise**, counting each kind:
    - status updates ("done", "PTAL", "please review", "+1", in any language);
@@ -53,7 +54,7 @@ Because the options differ on:
 - <a condition the options meet differently, one bare clause with no qualifier, no state and no number beyond the one that defines it: "have a freeze ADR", "be merged by you"> — <who set it> [link]
 
 ## Options
-- <option>
+- <option, one line, no letter or number before it>
   - Gives: <what choosing it gets the team, in one line> — <who said it> [link]
   - Costs: <what it costs or requires: money, people, time, a thing to build> — <who said it> [link]
   - <the words of a condition, shortened, never its number>: <met, not met, or not in the sources, with the number or fact that shows it> — <who said it> [link]
@@ -78,7 +79,7 @@ Because the options differ on:
 
 ## Read
 - Searched: <each source with where and the time range, in one line; the terms only if the person asks>
-- Could not search: <source and why: no tool, no access, nothing found>
+- Could not search: <source and why: the tool is not in this session, or it refused; never that you chose not to>
 - Read <n> items, kept <k>. Dropped: status <a>, brainstorming <b>, marketing <c>, duplicates <d>, repeats <e>.
 ```
 
