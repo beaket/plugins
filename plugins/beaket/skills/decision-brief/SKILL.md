@@ -11,6 +11,8 @@ allowed-tools: Bash(node */skills/decision-brief/scripts/beaket.mjs pull), ToolS
 
 The decision to brief, in the person's words: $ARGUMENTS
 
+Your first action, before reading anything: call ToolSearch with `select:mcp__claude_ai_Slack__slack_search_public_and_private,mcp__claude_ai_Slack__slack_read_thread,mcp__claude_ai_Slack__slack_read_channel` and then with the keyword `atlassian notion drive search`, so that the connectors' tools are loaded; what ToolSearch returns is what this session has. If it finds no Slack tool, the connectors may still be connecting: run the same ToolSearch once more after you have read the team's records and GitHub, and only then count Slack as not in this session. Only after that do you know which sources you can read.
+
 You run in a fresh context, apart from the conversation that called you, so that the brief costs the same whatever the age of that conversation. You see only this file and the argument above; the conversation sees only your final message. If the argument is empty, your whole final message is one line asking the person to name the decision, and you read nothing.
 
 The person has too much context for one decision, spread over many tools, and most of it is noise. Your job is to cut it down to what the decision needs, not to gather more.
@@ -47,40 +49,40 @@ The person has too much context for one decision, spread over many tools, and mo
 ```
 # <the decision, one line>
 
-## Comes down to
+## <"Comes down to" in the brief's language>
 <the one question the choice comes down to: one clause on one line, with no "if" and no "or", naming only the options in the title and no choice the sources do not hold, answerable by yes or no or by a name or a date, no option named as better; marked as the brief's reading. "Can you finish the freeze ADR, the alias removal and the Korean check before November 26?", not "if nothing is met by waiting, will you do the four things before a November Thursday, or defer until the stretch goal is in the gate?">
 
-Because the options differ on:
+<"Because the options differ on" in the brief's language>:
 - <a condition the options meet differently, one bare clause with no qualifier, no state and no number beyond the one that defines it: "have a freeze ADR", "be merged by you"> — <who set it> [link]
 
-## Options
-**<option, one line, bold, no dash and no letter or number before it>**
+## <"Options" in the brief's language>
+**<option, one line, bold; not a numbered list, nothing before it>**
 - <"gives" in the brief's language>: <what choosing it gets the team, in one line> — <who said it> [link]
 - <"costs" in the brief's language>: <what it costs or requires: money, people, time, a thing to build> — <who said it> [link]
 - <the words of a condition, shortened, never its number>: <met, not met, or not in the sources, with the number or fact that shows it> — <who said it> [link]
 
-## Agreed
+## <"Agreed" in the brief's language>
 - <what> — <who agreed> [link]
 
-## Open
+## <"Open" in the brief's language>
 - <question still open, and who asked> [link]
 
-## Unknown
+## <"Unknown" in the brief's language>
 - <what the sources do not say but the decision needs>
 
-## Reopened
+## <"Reopened" in the brief's language>
 - <trade-off> — <n> times, no conclusion [links]
 
-## Leans on
+## <"Leans on" in the brief's language>
 - <the document, table or person whose word carries the decision, and why> [link]
 
-## Past
+## <"Past" in the brief's language>
 - <similar earlier decision, for reference> [link]
 
-## Read
-- Searched: <each source with where and the time range, in one line; the terms only if the person asks>
-- Could not search: <source and why: the tool is not in this session, or it refused; never that you chose not to>
-- Read <n> items, kept <k>. Dropped: status <a>, brainstorming <b>, marketing <c>, duplicates <d>, repeats <e>.
+## <"Read" in the brief's language>
+- <"Searched" in the brief's language>: <each source with where and the time range, in one line; the terms only if the person asks>
+- <"Could not search" in the brief's language>: <source and why: the tool is not in this session, or it refused; never that you chose not to>
+- <"Read <n> items, kept <k>. Dropped: status <a>, brainstorming <b>, marketing <c>, duplicates <d>, repeats <e>" in the brief's language>
 ```
 
 7. Under the brief, ask the person whether anything they know is missing, and offer to search there.
