@@ -314,8 +314,10 @@ function findCached(dir, id) {
 
 // --- Passports (docs/specs/passport.md) ---
 // What Beaket keeps of a record in the clear, read from the record's own lines: a label of a few
-// words (the `Label:` line, or the file name's words), the owner, the dates, and the links of its
-// Sources, Rests on and Supersedes. Nothing of Decision, Why or Rejected.
+// words (the `Label:` line, else the record's title cut short, else the file name's words), the
+// owner and the day (their lines, else the record's head line "2026-10-21 · 결정: 박서연 (…)", as
+// the page's model writes it; beaket/beaket#3068), the dates, and the links of its Sources, Rests on
+// and Supersedes. Nothing of Decision, Why or Rejected.
 
 const MAX_LABEL = 80;
 const line = (text, names) => new RegExp(`^- (?:${names.join("|")}):\\s*(.+?)\\s*$`, "m").exec(text)?.[1];
@@ -338,12 +340,22 @@ function linksOf(block) {
   return [...found].map((href) => href.slice(0, 500));
 }
 
+// The record's head line, the first line of text after its title: "<day> · 결정: <who> (<role>) · …".
+function headOf(text) {
+  const before = text.split(/^#{2,6} /m)[0] ?? "";
+  const head = before.split("\n").find((l) => l.trim() && !/^#\s/.test(l) && !/^<!--/.test(l) && !/^- /.test(l)) ?? "";
+  const day = /\d{4}-\d{2}-\d{2}/.exec(head)?.[0];
+  const who = /(?:Decided by|결정한 사람|결정자|결정|決めた人|決定者|決定):\s*\**\s*([^(·,\n*]+)/.exec(head)?.[1]?.trim();
+  return { day, who: who || undefined };
+}
+
 function passportOf(file, text) {
   const title = /^# (.+)$/m.exec(text)?.[1] ?? basename(file, ".md");
   const slugWords = basename(file, ".md").replace(/^\d{4}-\d{2}-\d{2}-/, "").replace(/-/g, " ");
-  const label = (line(text, ["Label", "라벨", "ラベル"]) ?? slugWords).slice(0, MAX_LABEL);
-  const owner = (line(text, ["Decided by", "결정자", "決定者", "決めた人"]) ?? userInfo().username).slice(0, 80);
-  const decided = day(line(text, ["Date", "날짜", "日付"])) ?? new Date().toISOString().slice(0, 10);
+  const head = headOf(text);
+  const label = (line(text, ["Label", "라벨", "ラベル"]) ?? (/^# (.+)$/m.test(text) ? title : slugWords)).slice(0, MAX_LABEL);
+  const owner = (line(text, ["Decided by", "결정자", "決定者", "決めた人"]) ?? head.who ?? userInfo().username).slice(0, 80);
+  const decided = day(line(text, ["Date", "날짜", "日付"])) ?? head.day ?? new Date().toISOString().slice(0, 10);
   const reviewBy = day(line(text, ["Review by", "다시 볼 날", "見直す日"])) ?? null;
   const links = [
     ...linksOf(section(text, ["Sources", "출처", "ソース", "参照"])).map((href) => ({ rel: "source", href })),
