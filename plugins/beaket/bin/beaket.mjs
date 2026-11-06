@@ -6,7 +6,9 @@
 //
 //   node beaket.mjs team create [--server URL] [--name N]   make a team; you are its first manager
 //   node beaket.mjs team invite [--manager]                 invite one person; the code goes to the clipboard and a private file
-//   node beaket.mjs team join [--file F | code] [--name N]  join with an invite code, read from the clipboard by default
+//   node beaket.mjs team join [--file F | code] [--name N]  join with an invite code, read from the clipboard by default; a machine can be in several teams
+//   node beaket.mjs team use [<team id>]                     this folder's team: write .beaket/team here, or trust the one already here (beaket/beaket#3089)
+//   node beaket.mjs team leave <team id>                     leave one team on this machine: its keys and its cached records go; the others stay
 //   node beaket.mjs team members                            who is in the team, with their role
 //   node beaket.mjs team remove <name or id>                remove one member (managers): they are refused at once, and new records use a new key
 //   node beaket.mjs team log [--all]                        who joined, pushed, pulled, withdrew and removed what, and when
@@ -17,7 +19,11 @@
 // An invite code opens the team's key once, within a day. It never goes to standard output unless you
 // ask with --print, so that it stays out of an AI assistant's conversation, which is sent to its model.
 // The default server, stg.beaket.com, is Beaket's beta; Beaket will run on beaket.com later.
-//   node beaket.mjs status                       is this machine in a team, and where are its records
+//
+// The folder chooses the team, not the machine: a repository names its team in .beaket/team, and only
+// after the person trusted that file here (team use) does any command read or write that team. No file,
+// or a file not trusted since it changed, means no team: nothing is shown and nothing is pushed.
+//   node beaket.mjs status                       this folder's team and where its records are, and every team this machine is in
 //   node beaket.mjs paths                        the config, cache and private folders of this machine
 //   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport
 //   node beaket.mjs answer <file or id> <answer>   question | unchanged | changed: answer about a decision; Beaket keeps who, what and when
@@ -41,6 +47,8 @@ const HOOK_TIMEOUT_MS = 3000;
 const INDEX_SIZE = 30;
 const CONFIG_DIR = process.env.BEAKET_CONFIG_DIR ?? join(homedir(), ".config", "beaket");
 const CONFIG = join(CONFIG_DIR, "team.json");
+// The file a repository names its team in; a folder's team is the nearest one up from the working directory.
+const MARKER = join(".beaket", "team");
 const CACHE_ROOT = process.env.BEAKET_CACHE_DIR ?? join(homedir(), ".cache", "beaket", "teams");
 const JOIN_FILE = join(CONFIG_DIR, "join-code");
 const READER_FILE = join(CONFIG_DIR, "reader-key");
@@ -127,20 +135,63 @@ const keyOf = (config, epoch) => {
   return k ? fromB64(k) : null;
 };
 
-// --- This machine's team ---
+// --- This machine's teams (beaket/beaket#3089) ---
+// team.json holds one membership per team, each with its own member id, token, key pair and keys, under
+// `teams`, and under `markers` the SHA-256 of each .beaket/team file the person trusted with `team use`.
+// A file of the one-team shape (before 0.9.16) is read as one membership.
 
-function readConfig() {
-  if (!existsSync(CONFIG)) return null;
-  return JSON.parse(readFileSync(CONFIG, "utf8"));
+function readAll() {
+  if (!existsSync(CONFIG)) return { teams: {}, markers: {} };
+  const read = JSON.parse(readFileSync(CONFIG, "utf8"));
+  if (read.teams) return { markers: {}, ...read };
+  return { teams: read.team ? { [read.team]: read } : {}, markers: {} };
 }
 
-function writeConfig(config) {
-  mkdirSync(join(CONFIG, ".."), { recursive: true });
-  writeFileSync(CONFIG, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
+function writeAll(all) {
+  mkdirSync(CONFIG_DIR, { recursive: true });
+  writeFileSync(CONFIG, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 });
   chmodSync(CONFIG, 0o600);
 }
 
+// Save one membership back, as the commands do after a pull or a new key.
+function writeConfig(config) {
+  const all = readAll();
+  all.teams[config.team] = config;
+  writeAll(all);
+}
+
 const cacheDir = (c) => join(CACHE_ROOT, c.team);
+
+// The marker nearest the working directory, walking up: its path, and the team and server it names.
+function findMarker(from = process.cwd()) {
+  for (let dir = from; ; dir = dirname(dir)) {
+    const file = join(dir, MARKER);
+    if (existsSync(file)) {
+      const text = readFileSync(file, "utf8");
+      const team = /^team:\s*(\S+)/m.exec(text)?.[1];
+      const server = /^server:\s*(\S+)/m.exec(text)?.[1];
+      return { file, dir, team, server, hash: sha256(text) };
+    }
+    if (dirname(dir) === dir) return null;
+  }
+}
+
+const markerText = (team, server) => `team: ${team}\nserver: ${server}\n`;
+
+// This folder's team: the marker, trusted here, naming a team this machine is in. Otherwise why not, in one line.
+function folderTeam() {
+  const all = readAll();
+  const marker = findMarker();
+  const teams = Object.keys(all.teams);
+  const which = teams.length ? ` This machine is in ${teams.length} team(s): ${teams.join(", ")}.` : " This machine is in no Beaket team: make one with `team create`, or join with an invite code (`team join`).";
+  if (!marker) return { why: `This folder names no Beaket team (no ${MARKER} here or above).${teams.length ? " In the repository that uses one, run `team use <team id>`." : ""}${which}` };
+  if (!marker.team) return { why: `${marker.file} names no team (expected a line "team: <id>").${which}` };
+  const config = all.teams[marker.team];
+  if (!config) return { why: `This repository uses Beaket team ${marker.team} (${marker.file}), which this machine is not in. Ask a manager of that team for an invite, then \`team join\`.${which}` };
+  if (!config.member) return { why: `${CONFIG} holds team ${marker.team} from a team with one shared code, which Beaket no longer serves. Leave it (\`team leave ${marker.team}\`) and ask a manager for an invite.` };
+  if (all.markers[marker.file] !== marker.hash) return { why: `${marker.file} names team ${marker.team}, but you have not trusted this file here${all.markers[marker.file] ? " since it changed" : ""}. If that is right, run \`team use\` in this repository; until then nothing of that team is read or shared here.` };
+  return { config, marker };
+}
 
 function personName(rest) {
   const at = rest.indexOf("--name");
@@ -256,16 +307,33 @@ async function pushRecord(config, id, name, text) {
 }
 
 function needTeam() {
-  const config = readConfig();
+  const { config, why } = folderTeam();
   if (!config) {
-    console.error("This machine is in no Beaket team. Make one with `team create`, or join with an invite code (`team join`).");
-    process.exit(2);
-  }
-  if (!config.member) {
-    console.error(`${CONFIG} is from a team with one shared code, which Beaket no longer serves. Remove that file, then ask a manager of your team for an invite, or make a new team.`);
+    console.error(why);
     process.exit(2);
   }
   return config;
+}
+
+// One team this machine is in, by id, for the commands that work on a membership rather than a folder.
+function needMembership(id) {
+  const all = readAll();
+  if (!id) throw new Error(`Name the team, by id. This machine is in: ${Object.keys(all.teams).join(", ") || "no team"}.`);
+  const config = all.teams[id];
+  if (!config) throw new Error(`This machine is not in team ${id}. It is in: ${Object.keys(all.teams).join(", ") || "no team"}.`);
+  return config;
+}
+
+// Write the marker here and trust it, as `team use` does after create and join.
+function useHere(team, server) {
+  const file = join(process.cwd(), MARKER);
+  const text = markerText(team, server);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, text);
+  const all = readAll();
+  all.markers[file] = sha256(text);
+  writeAll(all);
+  return file;
 }
 
 // The members with the names on their cards; a card that does not open, or names another public key, is marked.
@@ -437,7 +505,6 @@ const self = fileURLToPath(import.meta.url);
 
 try {
   if (cmd === "team" && sub === "create") {
-    if (readConfig()) throw new Error(`This machine is already in a team (${CONFIG}). Remove that file first to make another.`);
     const at = rest.indexOf("--server");
     const server = (at >= 0 ? rest[at + 1] : process.env.BEAKET_URL ?? DEFAULT_SERVER).replace(/\/+$/, "");
     const team = randomId();
@@ -455,7 +522,7 @@ try {
       card: await sealCard(teamKey, team, member, { name, publicKey: pair.publicKey }),
     });
     writeConfig({ server, team, member, token, name, role: "manager", ...pair, epoch: 1, keys: { 1: b64(teamKey) }, cursor: 0 });
-    console.log(`Made a team at ${server}, with you (${name}) as its manager.${onBeta(server)} Invite each person with \`team invite\`; an invite lets one person join, once, within a day.`);
+    console.log(`Made team ${team} at ${server}, with you (${name}) as its manager.${onBeta(server)} Invite each person with \`team invite\`; an invite lets one person join, once, within a day. In the repository that uses this team, run \`team use ${team}\`.`);
   } else if (cmd === "team" && sub === "invite") {
     let config = needTeam();
     if (config.role !== "manager") throw new Error("Only a manager of the team can invite. Ask one of them.");
@@ -472,9 +539,7 @@ try {
     if (code.startsWith("bkt1.")) throw new Error("This is a code of a team with one shared code, which Beaket no longer serves. Ask a manager of the team for an invite (`team invite`).");
     if (!code.startsWith("bkt2.")) throw new Error("No invite code found: copy the code your teammate sent (it starts with bkt2.) and run this again, or pass --file <file holding it>.");
     const { server, team, secret } = JSON.parse(dec.decode(Buffer.from(code.slice(5), "base64url")));
-    const existing = readConfig();
-    if (existing?.team === team && existing.member) throw new Error(`This machine is already in this team (${CONFIG}).`);
-    if (existing && !rest.includes("--switch")) throw new Error(`This machine is already in another team (${CONFIG}). To leave it for this one, run this again with --switch.`);
+    if (readAll().teams[team]?.member) throw new Error(`This machine is already in team ${team} (${CONFIG}).`);
     const auth = `Invite ${await inviteToken(secret)}`;
     let invite;
     try {
@@ -502,13 +567,37 @@ try {
       },
       auth,
     );
-    if (existing) rmSync(cacheDir(existing), { recursive: true, force: true });
     let config = { server, team, member, token, name, role: joined.role, ...pair, epoch: invite.epoch, keys: { [invite.epoch]: b64(teamKey) }, cursor: 0 };
     writeConfig(config);
     config = await refreshKeys(config);
     const { changed, dir } = await pull(config);
     rmSync(JOIN_FILE, { force: true });
-    console.log(`Joined the team at ${server} as ${name} (${joined.role}).${onBeta(server)} ${changed} change(s) pulled; the records are in ${dir}.`);
+    console.log(`Joined team ${team} at ${server} as ${name} (${joined.role}).${onBeta(server)} ${changed} change(s) pulled; the records are in ${dir}. In the repository that uses this team, run \`team use ${team}\`.`);
+  } else if (cmd === "team" && sub === "use") {
+    // The folder's team: write .beaket/team here for a team this machine is in, or trust the file already here.
+    const all = readAll();
+    const id = rest[0] && !rest[0].startsWith("--") ? rest[0] : null;
+    const here = join(process.cwd(), MARKER);
+    if (id) {
+      const config = needMembership(id);
+      const file = useHere(config.team, config.server);
+      console.log(`${file} names team ${config.team} at ${config.server}, and this machine trusts it. Commit it so that every clone of this repository uses the same team. Sessions opened here read this team's records.`);
+    } else {
+      const marker = findMarker();
+      if (!marker) throw new Error(`No ${MARKER} here or above. Name the team to use here: \`team use <team id>\` (this machine is in: ${Object.keys(all.teams).join(", ") || "no team"}).`);
+      if (!marker.team) throw new Error(`${marker.file} names no team (expected a line "team: <id>").`);
+      if (!all.teams[marker.team]) throw new Error(`${marker.file} names team ${marker.team}, which this machine is not in. Ask a manager of that team for an invite, then \`team join\`.`);
+      all.markers[marker.file] = marker.hash;
+      writeAll(all);
+      console.log(`Trusted ${marker.file}: sessions opened under ${marker.dir} read team ${marker.team}'s records, and records confirmed there are shared with it.${marker.file === here ? "" : ` (The file is above this folder, in ${marker.dir}.)`}`);
+    }
+  } else if (cmd === "team" && sub === "leave") {
+    const config = needMembership(rest[0]);
+    const all = readAll();
+    delete all.teams[config.team];
+    writeAll(all);
+    rmSync(cacheDir(config), { recursive: true, force: true });
+    console.log(`Left team ${config.team} on this machine: its keys and its cached records are gone, and the other team(s) stay. Beaket still lists you as a member until a manager removes you (\`team remove\`).`);
   } else if (cmd === "team" && sub === "members") {
     const config = await refreshKeys(needTeam());
     for (const m of await members(config)) {
@@ -627,8 +716,14 @@ try {
     await call(config, "DELETE", `/api/teams/${config.team}/readers/${rest[0]}`);
     console.log(`Revoked read key ${rest[0]}. The window refuses it from now on.`);
   } else if (cmd === "status") {
-    const config = needTeam();
-    console.log(`Team ${config.team} at ${config.server}, as ${config.name} (${config.role}).${onBeta(config.server)} Records: ${cacheDir(config)}. Script: ${self}`);
+    const { config, why } = folderTeam();
+    const all = readAll();
+    const lines = config
+      ? [`This folder's team: ${config.team} at ${config.server}, as ${config.name} (${config.role}).${onBeta(config.server)} Records: ${cacheDir(config)}.`]
+      : [why];
+    for (const t of Object.values(all.teams)) if (t.team !== config?.team) lines.push(`Also in team ${t.team} at ${t.server}, as ${t.name} (${t.role}); not this folder's team.`);
+    lines.push(`Script: ${self}`);
+    console.log(lines.join("\n"));
   } else if (cmd === "push") {
     let config = needTeam();
     for (const file of [sub, ...rest].filter(Boolean)) {
@@ -658,7 +753,7 @@ try {
       console.log(`- ${p.state}: "${p.label}" — ${p.owner}, ${p.decided}${p.reviewBy ? `, review by ${p.reviewBy}` : ""}, ${p.links.length} link(s), record ${p.id}${trail}`);
     }
   } else if (cmd === "paths") {
-    console.log(`config: ${CONFIG}\ncache: ${CACHE_ROOT}\nprivate: ${PRIVATE_DIR}`);
+    console.log(`config: ${CONFIG}\ncache: ${CACHE_ROOT}\nprivate: ${PRIVATE_DIR}\nmarker: ${findMarker()?.file ?? `none (${MARKER} here or above)`}`);
   } else if (cmd === "unshared") {
     const dir = sub ?? join(process.cwd(), "decisions");
     const files = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".md")).sort() : [];
@@ -705,8 +800,14 @@ try {
     const config = needTeam();
     for (const r of index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
   } else if (cmd === "session-start") {
-    const config = readConfig();
-    if (!config?.member) process.exit(0);
+    // The folder's team only. No team on this machine: say nothing. A team on the machine but none trusted
+    // here: one line, so that a repository with records is not silent by mistake, and nothing of any team.
+    const { config, why } = folderTeam();
+    if (!config) {
+      const teams = Object.keys(readAll().teams).length;
+      if (teams && (findMarker() || existsSync(join(process.cwd(), "decisions")))) console.log(sub === "--json" ? JSON.stringify({ additionalContext: why }) : why);
+      process.exit(0);
+    }
     let note = "";
     try {
       await pull(config, HOOK_TIMEOUT_MS);
