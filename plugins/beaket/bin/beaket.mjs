@@ -666,7 +666,7 @@ function cardQuestion(card, width) {
     card: drawCard(card, { width }).join("\n"),
     questions: [
       {
-        question: `${card.title.replace(/[?？]?\s*$/, "?")} ${first}`,
+        question: `${card.title}\n${first}`,
         header: [...w.badge].slice(0, 12).join(""),
         multiSelect: false,
         options: ordered.map((o) => ({
@@ -679,9 +679,37 @@ function cardQuestion(card, width) {
   };
 }
 
+// The card as lines, one part per line, so that the command carries no braces or quotes, which Claude Code asks
+// about every time (beaket/beaket#3139): title:, happened:, question:, then per option "option:" and its "+" and "−"
+// lines, then recommend:, why:, and an open: line per open item. JSON is read as well.
+function parseCardLines(text) {
+  const card = { options: [], open: [], recommend: {} };
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const sign = /^([+−-])\s*(.+)$/.exec(line);
+    if (sign) {
+      const o = card.options.at(-1);
+      if (!o) throw new Error(`"${line}" comes before any option: line.`);
+      (sign[1] === "+" ? o.gets : o.costs).push(sign[2]);
+      continue;
+    }
+    const kv = /^([a-z]+):\s*(.*)$/.exec(line);
+    if (!kv) throw new Error(`"${line}" is not a part of the card (title:, happened:, question:, option:, + , − , recommend:, why:, open:, lang:).`);
+    const [, key, value] = kv;
+    if (key === "option") card.options.push({ name: value, gets: [], costs: [] });
+    else if (key === "open") card.open.push(value);
+    else if (key === "recommend") card.recommend.option = value;
+    else if (key === "why") card.recommend.why = value;
+    else if (["title", "happened", "question", "lang"].includes(key)) card[key] = card[key] ? `${card[key]} ${value}` : value;
+    else throw new Error(`"${key}:" is not a part of the card.`);
+  }
+  return card;
+}
+
 function readCard(source) {
-  const json = !source || source === "-" ? readFileSync(0, "utf8") : source.trim().startsWith("{") ? source : readFileSync(source, "utf8");
-  const card = JSON.parse(json);
+  const text = !source || source === "-" ? readFileSync(0, "utf8") : source.trim().startsWith("{") ? source : readFileSync(source, "utf8");
+  const card = text.trim().startsWith("{") ? JSON.parse(text) : parseCardLines(text);
   checkCard(card);
   return card;
 }
@@ -1017,7 +1045,7 @@ try {
       note = " (Beaket could not be reached; these are from the last pull)";
     }
     const list = index(config);
-    const card = `When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card as JSON on standard input through a quoted heredoc (<<'CARD'), in the person's language: {"title": the decision to make, in one line; "happened": what happened, in two to four plain sentences; "question": the choice, as one question; "options": two to four, each {"name": what it does, "gets": [what it gets], "costs": [what it costs]}; "recommend": {"option": the name of the one you recommend, "why": why}; "open": [what stays open whichever is chosen], when there is something}. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON: put its "card" in your message in a fenced code block, exactly as printed, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again.`;
+    const card = `When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON: put its "card" in your message in a fenced code block, exactly as printed, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again.`;
     const share = `To share a new record: node ${self} push <file>.`;
     if (list.length === 0) {
       const text = [`This machine is in a Beaket team with no decision records yet${note}.`, card, share].join("\n");
