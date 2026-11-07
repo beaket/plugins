@@ -33,6 +33,7 @@
 //   node beaket.mjs pull                         fetch and decrypt the team's records
 //   node beaket.mjs index                        list the team's newest records
 //   node beaket.mjs verify                       the SHA-256 of this script, and whether every copy of it in the plugin is the same
+//   node beaket.mjs card <file | - | json> [--ask] [--width N]   draw the card for a choice; --ask prints the card for the session's message and the question with options for Claude Code
 //   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index and the rules, the card for a choice included (--json for GitHub Copilot)
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -500,6 +501,237 @@ function index(config) {
     .slice(0, INDEX_SIZE);
 }
 
+// --- The card for a choice (decision-brief B17) ---
+// The session hands over the card's words as JSON; this draws it, so that every card has the same shape and its right
+// border lines up with Korean, Japanese and Chinese, which a terminal draws two columns wide. Nothing leaves the machine.
+
+const CARD_WORDS = {
+  ko: { badge: "정할 것", happened: "무슨 일인가", choice: "고를 것", recommend: "추천", open: "아직 안 정해지는 것", kept: "답하면 팀의 결정 기록으로 남아요", tag: "추천", by: "에이전트" },
+  ja: { badge: "決めること", happened: "何が起きたか", choice: "選ぶもの", recommend: "おすすめ", open: "まだ決まらないこと", kept: "答えはチームの決定として残ります", tag: "おすすめ", by: "エージェント" },
+  en: { badge: "To decide", happened: "What happened", choice: "The choice", recommend: "Recommended", open: "Still open", kept: "Your answer is kept as a team decision", tag: "recommended", by: "the agent" },
+};
+// Color carries meaning only: gains in the terminal's green, costs in its red; the rest is the terminal's own text,
+// bold for what to read first and faint for what supports it. Only the 16 colors and attributes every terminal theme
+// defines, never fixed colors, so the card fits a light, dark or color-blind theme (beaket/beaket#3139).
+const SGR = { badge: ["7;1", "27;22"], strong: ["1", "22"], faint: ["2", "22"], gain: ["32", "39"], cost: ["31", "39"] };
+
+// Columns a terminal gives a code point: two for East Asian wide and fullwidth, none for combining marks.
+function columns(ch) {
+  const c = ch.codePointAt(0);
+  if ((c >= 0x300 && c <= 0x36f) || (c >= 0x200b && c <= 0x200f) || (c >= 0xfe00 && c <= 0xfe0f)) return 0;
+  const wide = [[0x1100, 0x115f], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf], [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xa960, 0xa97f], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6], [0x1f300, 0x1f64f], [0x1f900, 0x1f9ff], [0x20000, 0x3fffd]];
+  return wide.some(([a, b]) => c >= a && c <= b) ? 2 : 1;
+}
+const widthOf = (s) => [...s].reduce((n, ch) => n + columns(ch), 0);
+
+// Wrap at spaces to a width in columns; a word wider than the line is cut where it fills it.
+function wrapTo(text, width) {
+  const lines = [];
+  let line = "";
+  for (const word of String(text).trim().split(/\s+/)) {
+    const joined = line ? `${line} ${word}` : word;
+    if (widthOf(joined) <= width) {
+      line = joined;
+      continue;
+    }
+    if (line) lines.push(line);
+    line = "";
+    for (const ch of word) {
+      if (widthOf(line + ch) > width) {
+        lines.push(line);
+        line = "";
+      }
+      line += ch;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [""];
+}
+
+const listOf = (v) => (Array.isArray(v) ? v : v ? [v] : []).map(String).filter((s) => s.trim());
+
+// The card's rules (beaket/beaket#3135): one choice, each option named by what it does with what it gets and costs,
+// a recommendation that names one of them, and nothing a person who was not there cannot read.
+function checkCard(card) {
+  const problems = [];
+  if (!card.title?.trim()) problems.push("title: the decision to make, in one line");
+  if (!card.happened?.trim()) problems.push("happened: what happened, in two to four plain sentences");
+  if (!card.question?.trim()) problems.push("question: the choice, as one question");
+  const options = Array.isArray(card.options) ? card.options : [];
+  if (options.length < 2 || options.length > 4) problems.push("options: two to four, one per way to go; two choices are two cards");
+  for (const [i, o] of options.entries()) {
+    if (!o?.name?.trim()) problems.push(`options[${i}].name: what the option does`);
+    else if (/^(option|choice|선택지|옵션|案)\s*\d+$|^(the )?(middle|중간|가운데)( one)?$/i.test(o.name.trim())) problems.push(`options[${i}].name "${o.name}": name it by what it does`);
+    if (!listOf(o?.gets).length) problems.push(`options[${i}].gets: what choosing it gets`);
+    if (!listOf(o?.costs).length) problems.push(`options[${i}].costs: what choosing it costs`);
+  }
+  const names = options.map((o) => o?.name);
+  if (!card.recommend?.option || !names.includes(card.recommend.option)) problems.push(`recommend.option: one of ${names.map((n) => `"${n}"`).join(", ")}`);
+  if (!card.recommend?.why?.trim()) problems.push("recommend.why: why you recommend it");
+  // Words only an agent reads: code, file names, spec claim IDs, function calls.
+  const words = [card.title, card.happened, card.question, card.recommend?.why, ...listOf(card.open), ...options.flatMap((o) => [o?.name, ...listOf(o?.gets), ...listOf(o?.costs)])].filter(Boolean).join("\n");
+  const jargon = [/`[^`]+`/, /(?:^|[\s("'])[\w./-]*[a-z0-9_-]\.(md|mjs|ts|tsx|json|ya?ml|toml|sql|py|go|rs|sh)\b/, /\b[a-z][\w-]*\/[BN]\d+\b/, /\b[BN]\d{1,3}\b/, /\b\w+\(\)/];
+  for (const hit of jargon.map((re) => re.exec(words)?.[0].trim()).filter(Boolean)) problems.push(`"${hit}": say what the thing does, not its file, claim, table or function name`);
+  if (problems.length) throw new Error(`The card is not ready:\n- ${problems.join("\n- ")}`);
+}
+
+function cardLanguage(card) {
+  if (CARD_WORDS[card.lang]) return card.lang;
+  const text = `${card.title} ${card.happened}`;
+  return /[가-힣]/.test(text) ? "ko" : /[぀-ヿ]/.test(text) ? "ja" : "en";
+}
+
+// The card's lines, each a list of [text, style] parts and a kind (gain, cost or none), the same for every way it is
+// drawn; without signs, an item's wrapped lines hang two columns in, since in a diff each line carries the sign.
+function cardLines(card, inner, { signs = true, focus } = {}) {
+  const w = CARD_WORDS[cardLanguage(card)];
+  const by = card.recommend.by ?? (process.env.CLAUDECODE ? "Claude" : w.by);
+  const lines = [];
+  const line = (parts, kind) => lines.push({ parts: parts.filter(([s]) => s), kind });
+  const blank = () => line([]);
+  const text = (s, indent, style) => wrapTo(s, inner - indent).forEach((l) => line([[" ".repeat(indent)], [l, style]]));
+  const head = (h, small) => (blank(), line([[h, "strong"], [small ? ` · ${small}` : "", "faint"]]));
+
+  wrapTo(card.title, inner).forEach((l) => line([[l, "strong"]]));
+  head(w.happened);
+  text(card.happened, 2);
+  const question = wrapTo(card.question, inner - widthOf(w.choice) - 3);
+  head(w.choice, question[0]);
+  for (const l of question.slice(1)) text(l, widthOf(w.choice) + 3, "faint");
+  for (const o of card.options) {
+    blank();
+    const on = focus === undefined ? o.name === card.recommend.option : o.name === focus;
+    const tag = o.name === card.recommend.option ? ` · ${w.tag}` : "";
+    const names = wrapTo(o.name, inner - 4 - widthOf(tag));
+    names.forEach((l, i) => line([[`  ${i ? " " : on ? "◆" : "◇"} `], [l, "strong"], [i === names.length - 1 ? tag : "", "faint"]]));
+    for (const [sign, kind, items] of [["+", "gain", listOf(o.gets)], ["−", "cost", listOf(o.costs)]])
+      for (const item of items) wrapTo(item, inner - (signs ? 6 : 8)).forEach((l, i) => line([[signs ? `    ${i ? " " : sign} ${l}` : `      ${i ? "  " : ""}${l}`]], kind));
+  }
+  head(w.recommend, by);
+  text(`${card.recommend.option}. ${card.recommend.why}`, 2);
+  const open = listOf(card.open);
+  if (open.length) {
+    head(w.open);
+    for (const item of open) wrapTo(item, inner - 4).forEach((l, i) => line([[`  ${i ? " " : "·"} `, "faint"], [l]]));
+  }
+  return { lines, badge: w.badge, kept: w.kept };
+}
+
+const plainOf = (l) => l.parts.map(([s]) => s).join("");
+const paintOf = (l) => {
+  const body = l.parts.map(([s, style]) => (style ? `\x1b[${SGR[style][0]}m${s}\x1b[${SGR[style][1]}m` : s)).join("");
+  return l.kind ? `\x1b[${SGR[l.kind][0]}m${body}\x1b[${SGR[l.kind][1]}m` : body;
+};
+
+// The card in a rounded box of exactly `width` columns, as a terminal shows it; with `color`, in the terminal's own colors.
+function drawCard(card, { width = 64, color = false } = {}) {
+  const inner = Math.max(24, width - 8); // two of border, three of padding on each side
+  const { lines, badge, kept } = cardLines(card, inner);
+  const style = (s, name) => (color ? `\x1b[${SGR[name][0]}m${s}\x1b[${SGR[name][1]}m` : s);
+  const titled = wrapTo(card.title, inner).length;
+  const all = [
+    { parts: [[color ? ` ${badge} ` : `[${badge}]`, "badge"]] },
+    ...lines.slice(0, titled),
+    { parts: [["─".repeat(inner), "faint"]] },
+    ...lines.slice(titled),
+    { parts: [] },
+    { parts: [["╌".repeat(inner), "faint"]] },
+    { parts: [["● " + kept, "faint"]] },
+  ];
+  const edge = (s) => style(s, "faint");
+  const fill = (l) => (color ? paintOf(l) : plainOf(l)) + " ".repeat(Math.max(0, inner - widthOf(plainOf(l))));
+  const pad = edge("│") + " ".repeat(inner + 6) + edge("│");
+  return [edge(`╭${"─".repeat(inner + 6)}╮`), pad, ...all.map((l) => `${edge("│")}   ${fill(l)}   ${edge("│")}`), pad, edge(`╰${"─".repeat(inner + 6)}╯`)];
+}
+
+// The card for the session's message in Claude Code, as a diff: Claude Code paints a diff's added lines in the theme's
+// color for added and its removed lines in its color for removed, light, dark or color-blind, and leaves the rest in
+// the theme's text color; a code block in any other language is painted in one color. So gains are added lines and
+// costs removed lines, with the sign outside a rule on the left and no right border.
+function diffCard(card, width = 72) {
+  const inner = width - 4;
+  const { lines, badge, kept } = cardLines(card, inner, { signs: false });
+  const sign = (l) => (l.kind === "gain" ? "+" : l.kind === "cost" ? "-" : " ");
+  const top = ` ╭─ ${badge} ${"─".repeat(Math.max(4, inner - widthOf(badge) - 2))}`;
+  const body = lines.map((l) => `${sign(l)}│ ${plainOf(l)}`.replace(/\s+$/, ""));
+  return ["```diff", top, ...body, " │", ` ╰─ ${kept}`, "```"].join("\n");
+}
+
+// The one option the person is on, for the preview beside the options: Claude Code shows about the terminal's height
+// less 26 lines there, so the whole card goes in the session's message and the preview holds this option and the advice.
+function drawOption(card, option, width) {
+  const w = CARD_WORDS[cardLanguage(card)];
+  const by = card.recommend.by ?? (process.env.CLAUDECODE ? "Claude" : w.by);
+  const lines = [];
+  const tag = option.name === card.recommend.option ? ` · ${w.tag}` : "";
+  wrapTo(`${option.name}${tag}`, width - 3).forEach((l, i) => lines.push(` ${i ? " " : "◆"} ${l}`));
+  for (const [sign, items] of [["+", listOf(option.gets)], ["-", listOf(option.costs)]])
+    for (const item of items) wrapTo(item, width - 5).forEach((l, i) => lines.push(`${sign}  ${i ? "  " : ""}${l}`));
+  lines.push(" ", ` ${w.recommend} · ${by}`);
+  for (const l of wrapTo(`${card.recommend.option}. ${card.recommend.why}`, width - 3)) lines.push(`   ${l}`);
+  lines.push(" ", ` ● ${w.kept}`);
+  return lines;
+}
+
+// What the session needs to ask in Claude Code: the whole card, as a diff in a code block, for its message, and
+// AskUserQuestion's input, with the card's title and what happened as the question, one option per card option (the
+// recommended one first), and that option's gains, costs and the advice as its preview.
+function cardQuestion(card, width) {
+  const w = CARD_WORDS[cardLanguage(card)];
+  const first = card.happened.trim().split(/(?<=[.!?。])\s+/)[0];
+  const ordered = [...card.options].sort((a, b) => (b.name === card.recommend.option) - (a.name === card.recommend.option));
+  return {
+    card: diffCard(card, width),
+    questions: [
+      {
+        question: `${card.title}\n${first}`,
+        header: [...w.badge].slice(0, 12).join(""),
+        multiSelect: false,
+        options: ordered.map((o) => ({
+          label: o.name === card.recommend.option ? `${o.name} (${w.tag})` : o.name,
+          description: [...listOf(o.gets).map((g) => `+ ${g}`), ...listOf(o.costs).map((c) => `− ${c}`)].join(" "),
+          preview: ["```diff", ...drawOption(card, o, 52), "```"].join("\n"),
+        })),
+      },
+    ],
+  };
+}
+
+// The card as lines, one part per line, so that the command carries no braces or quotes, which Claude Code asks
+// about every time (beaket/beaket#3139): title:, happened:, question:, then per option "option:" and its "+" and "−"
+// lines, then recommend:, why:, and an open: line per open item. JSON is read as well.
+function parseCardLines(text) {
+  const card = { options: [], open: [], recommend: {} };
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const sign = /^([+−-])\s*(.+)$/.exec(line);
+    if (sign) {
+      const o = card.options.at(-1);
+      if (!o) throw new Error(`"${line}" comes before any option: line.`);
+      (sign[1] === "+" ? o.gets : o.costs).push(sign[2]);
+      continue;
+    }
+    const kv = /^([a-z]+):\s*(.*)$/.exec(line);
+    if (!kv) throw new Error(`"${line}" is not a part of the card (title:, happened:, question:, option:, + , − , recommend:, why:, open:, lang:).`);
+    const [, key, value] = kv;
+    if (key === "option") card.options.push({ name: value, gets: [], costs: [] });
+    else if (key === "open") card.open.push(value);
+    else if (key === "recommend") card.recommend.option = value;
+    else if (key === "why") card.recommend.why = value;
+    else if (["title", "happened", "question", "lang"].includes(key)) card[key] = card[key] ? `${card[key]} ${value}` : value;
+    else throw new Error(`"${key}:" is not a part of the card.`);
+  }
+  return card;
+}
+
+function readCard(source) {
+  const text = !source || source === "-" ? readFileSync(0, "utf8") : source.trim().startsWith("{") ? source : readFileSync(source, "utf8");
+  const card = text.trim().startsWith("{") ? JSON.parse(text) : parseCardLines(text);
+  checkCard(card);
+  return card;
+}
+
 const [cmd, sub, ...rest] = process.argv.slice(2);
 const self = fileURLToPath(import.meta.url);
 
@@ -799,6 +1031,22 @@ try {
   } else if (cmd === "index") {
     const config = needTeam();
     for (const r of index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
+  } else if (cmd === "card") {
+    // Draw the card for a choice (decision-brief B17). Without --ask, the card itself, in color on a terminal;
+    // with --ask, JSON with the card drawn for the session's message and AskUserQuestion's input for Claude Code.
+    const args = [sub, ...rest].filter((a) => a !== undefined);
+    const at = args.indexOf("--width");
+    const columnsWanted = at >= 0 ? Number(args[at + 1]) : undefined;
+    if (at >= 0 && !(columnsWanted >= 32)) throw new Error("--width takes a number of columns, 32 or more.");
+    const source = args.find((a, i) => !a.startsWith("--") && !(at >= 0 && i === at + 1));
+    const card = readCard(source);
+    if (args.includes("--ask")) {
+      console.log(JSON.stringify(cardQuestion(card, columnsWanted ?? 72), null, 2));
+    } else {
+      const color = args.includes("--color") || (process.stdout.isTTY && !process.env.NO_COLOR && !args.includes("--no-color"));
+      const width = columnsWanted ?? Math.min(76, process.stdout.columns || 76);
+      console.log(drawCard(card, { width, color }).join("\n"));
+    }
   } else if (cmd === "session-start") {
     // The folder's team only. No team on this machine: say nothing. A team on the machine but none trusted
     // here: one line, so that a repository with records is not silent by mistake, and nothing of any team.
@@ -815,7 +1063,7 @@ try {
       note = " (Beaket could not be reached; these are from the last pull)";
     }
     const list = index(config);
-    const card = `When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw the card in a fenced code block with a left gutter only (╭─ the title, │ and ├─ for each part, ╰─ the last line), never a right border, which wide characters break. In this order: the decision to make, in one line; what happened, in two to four plain sentences; the choice, as the question in one line, then each option by name with "+" for what it gets and "−" for what it costs; your recommendation and why, marked as yours; what stays open whichever is chosen, when there is something; and a last line saying that the answer is kept as a team decision. In Korean the parts are 무슨 일인가, 고를 것, 추천, 아직 안 정해지는 것. Where a tool to ask a question with options is available (AskUserQuestion in Claude Code), ask with it right after the card: the question is the card's title and what happened in one sentence, so that it reads alone; one option per card option, its gain and cost as the description, your recommendation first and marked as recommended. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: keep it at once with the decision-record skill, from the card and the answer, with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again.`;
+    const card = `Before you change anything for a request, find what it leaves open that the person or their team would want to answer, not you: who receives or sees something, what customers are shown, sent or charged, what it costs or adds to run, what is kept or dropped, what someone else must do. Do not choose that yourself, not even as an assumption or a default you mention at the end; stop before the first change and put it to the person as a card. A choice only about how the code is written, which nobody outside the code would notice, is yours: make it and go on. When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON: put its "card" in your message exactly as printed, the code block marked diff included, which colors gains and costs in the person's own theme, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again.`;
     const share = `To share a new record: node ${self} push <file>.`;
     if (list.length === 0) {
       const text = [`This machine is in a Beaket team with no decision records yet${note}.`, card, share].join("\n");
