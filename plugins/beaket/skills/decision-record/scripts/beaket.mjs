@@ -35,6 +35,7 @@
 //   node beaket.mjs read --all                   every record of the last pull, opened
 //   node beaket.mjs search <words>               the lines of the team's records that hold these words
 //   node beaket.mjs index                        list the team's newest records
+//   node beaket.mjs next [n]                     the one thing left to decide in the team's records, as the page's first screen shows it; n for the one after
 //   node beaket.mjs verify                       the SHA-256 of this script, and whether every copy of it in the plugin is the same
 //   node beaket.mjs card <file | - | json> [--ask] [--width N]   draw the card for a choice; --ask prints the card for the session's message and the question with options for Claude Code
 //   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index and the rules, the card for a choice included (--json for GitHub Copilot)
@@ -534,6 +535,52 @@ async function index(config) {
     })
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, INDEX_SIZE);
+}
+
+// --- What is left to decide (beaket/beaket#3141, page B27) ---
+// Each item of a record's Still open section that no record answers under its Answers section, the records whose
+// day to look again has come first, then the newest: the same order as the page's first screen, so that both
+// offer the same one (decisions/2026-11-07-first-screen-order.md in beaket/beaket). Nothing leaves the machine.
+const STILL_OPEN = /^(아직 안 정한 것|아직 열린 것|Still open|Open|まだ決めていないこと|まだ開いていること)$/i;
+const ANSWERS = /^(답한 것|Answers|答えたこと)$/i;
+
+function itemsUnder(text, heading) {
+  const out = [];
+  let inside = false;
+  for (const l of text.split("\n")) {
+    const h = /^#{1,6}\s+(.+?)\s*$/.exec(l);
+    if (h) {
+      inside = heading.test(h[1]);
+      continue;
+    }
+    const item = inside && /^\s{0,1}[-*]\s+(.+?)\s*$/.exec(l);
+    if (item) out.push(item[1]);
+  }
+  return out;
+}
+
+const itemWords = (s) => s.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+const sameItem = (s) => itemWords(s).replace(/\s*\[[^\]]*\]\s*$/, "").replace(/\s+/g, " ").trim();
+// The page keeps a record's own reminder in a line of its own (beaket-page); the plugin's record says Review by.
+const pageMeta = (text) => {
+  try {
+    return JSON.parse(/^<!-- beaket-page: (\{.*\}) -->$/m.exec(text)?.[1] ?? "{}");
+  } catch {
+    return {};
+  }
+};
+
+async function openItems(config, today = new Date().toISOString().slice(0, 10)) {
+  const all = (await cachedRecords(config)).map((r) => {
+    const meta = pageMeta(r.text);
+    const date = meta.decidedOn ?? day(line(r.text, ["Date", "날짜", "日付"])) ?? headOf(r.text).day ?? r.at.toISOString().slice(0, 10);
+    const review = meta.remindedOn ? null : (meta.remindOn ?? day(line(r.text, ["Review by", "다시 볼 날", "見直す日"])) ?? null);
+    return { ...r, date, due: review !== null && review <= today, title: /^# (.+)$/m.exec(r.text)?.[1] ?? r.name };
+  });
+  const answered = new Set(all.flatMap((r) => itemsUnder(r.text, ANSWERS).map((a) => sameItem(a.replace(/^[^\s:]+:\s+/, "")))));
+  return all
+    .sort((a, b) => Number(b.due) - Number(a.due) || b.date.localeCompare(a.date) || a.id.localeCompare(b.id))
+    .flatMap((r) => itemsUnder(r.text, STILL_OPEN).filter((t) => !answered.has(sameItem(t))).map((item) => ({ record: r.id, file: r.name, title: shown(r.title, 120), item: shown(itemWords(item), 500), due: r.due })));
 }
 
 // --- The card for a choice (decision-brief B17) ---
@@ -1089,6 +1136,18 @@ try {
         hits++;
       });
     if (hits === 0) console.log(`No line of the team's records holds "${words}".`);
+  } else if (cmd === "next") {
+    // beaket/beaket#3141: the one thing to decide, as the page's first screen shows it; `next 2` is the one after.
+    const config = needTeam();
+    const n = sub === undefined ? 1 : Number(sub);
+    if (!(Number.isInteger(n) && n >= 1)) throw new Error("Usage: next [n], n counting from 1.");
+    const items = await openItems(config);
+    if (items.length === 0) console.log("Nothing is left to decide in the team's records on this machine. Run `pull` to fetch the newest.");
+    else {
+      const at = (n - 1) % items.length;
+      console.log(`(From a teammate's record. ${DATA_NOTE})`);
+      console.log(JSON.stringify({ n: at + 1, of: items.length, ...items[at] }, null, 2));
+    }
   } else if (cmd === "index") {
     const config = needTeam();
     for (const r of await index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
