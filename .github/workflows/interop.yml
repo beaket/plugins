@@ -1,0 +1,32 @@
+name: interop
+
+# The client's crypto, read from plugins/beaket/bin/beaket.mjs, against a second implementation in Go:
+# each makes a team scenario the other must open. A change to a key, a format or an AAD fails here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cross-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/interop/go/go.mod
+          cache: false
+      - name: Go vet and test
+        working-directory: tools/interop/go
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./...
+      - name: Build the Go client
+        working-directory: tools/interop/go
+        run: go build -o "$RUNNER_TEMP/beaket-go" .
+      - name: Cross-check JS and Go
+        run: node tools/interop/oracle.mjs cross "$RUNNER_TEMP/beaket-go" 20
