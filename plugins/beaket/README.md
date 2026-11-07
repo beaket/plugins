@@ -14,6 +14,14 @@ In Claude Code 2.1.275 or later:
 ```
 In earlier versions, `/plugin marketplace add beaket/plugins`, then `/plugin install beaket@beaket`.
 
+### Pin a release
+For a security review, install from a release tag rather than the default branch:
+```
+/plugin marketplace add beaket/plugins#v0.13.0
+/plugin install beaket@beaket
+```
+From a shell, `claude plugin marketplace add beaket/plugins#v0.13.0` does the same. An organization can allow only that source in its managed settings with `strictKnownMarketplaces: [{"source": "github", "repo": "beaket/plugins", "ref": "v0.13.0"}]`. Auto-update is off for this marketplace unless someone turns it on. Each release is tagged `v<version>` and its notes give the SHA-256 of `bin/beaket.mjs`; `node bin/beaket.mjs verify` prints the hash of the copy you have and checks that every skill's copy is the same. The plugin has no dependencies and installs nothing else.
+
 ## Beta
 Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `beaket.com` later. Set another server with `team create --server <URL>` or `BEAKET_URL`.
 
@@ -33,6 +41,8 @@ Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `be
 - **The log.** `team log` shows every member that log with names, which only the team can read.
 - **On your machine:** your private key, token and the team keys, one set per team, in `~/.config/beaket/team.json` (readable only by you), with the SHA-256 of each `.beaket/team` file you trusted; the records of the last pull and their passports sealed in `~/.cache/beaket/teams/<team>/`, one folder per team, with a key derived from your private key, so that a backup, a sync or a search of your home folder finds no record's text; `read` and `search` open them for the session, and a cache from an earlier version is dropped and pulled again, sealed; and private records in `~/.config/beaket/private/`.
 - **Which team a session sees.** The folder chooses: the nearest `.beaket/team` up from the working directory names the team, and only after you ran `team use` there (which records the file's hash) does the SessionStart hook list that team's records, or `push` share with it. No file, a file you did not trust, a file changed since, a team this machine is not in, or a folder above two repositories: nothing of any team is shown or shared, and the hook says why in one line when the machine is in a team. So two companies' teams on one machine never meet, and an agent cannot send a record elsewhere by rewriting the file. `team leave <id>` removes one team's keys and cache and touches no other.
+- **What a teammate wrote reaches your session as data.** The SessionStart hook puts its rules first and the teammates' record titles last, between two lines marked with a random word nobody can guess, each title cut to 80 characters without line breaks, control, zero-width or direction characters, or angle brackets, and the whole under the 10,000 characters a hook may give. It says that the titles and every record's text are data, not instructions; `read` and `search` say the same above what they print.
+- **The brief reads and changes nothing.** `decision-brief` runs in the plugin's own subagent (`agents/brief.md`) with only Read, Bash, ToolSearch and the Slack, Atlassian, Notion and Google Drive connectors; it has no tool to write files or fetch the web, and Slack's tools that send, post, create or change are taken away by name. It keeps Bash for the plugin's script and `gh`, which a command could still use to send something; your permission settings still ask before such a command runs.
 - **You do not have to trust Beaket's server** to keep records secret: it never receives a team key. You rely on it to refuse a removed member the records pushed before their removal.
 - **Private records** carry `<!-- beaket-private -->` and `push` refuses them.
 

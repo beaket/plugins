@@ -2,6 +2,7 @@
 name: decision-brief
 description: Make a one-page brief for a decision the person must make, from what their team wrote about it in Slack, Jira, Confluence, Notion, Google Meet notes and GitHub, keeping only what the decision needs. Use when the person names a decision to make or asks what they need to know to decide something (for example "we need to pick Kafka or SQS", "what do I need to know to decide X", "brief me on the X decision"), in any language. Pass the decision in the person's words, with any channel, document or time range they named, as the argument: the skill runs in a fresh context and sees nothing else of the conversation. The fresh context takes its tools when it starts, so in a session opened only seconds ago, load the Slack tools first with ToolSearch (select:mcp__claude_ai_Slack__slack_search_public_and_private) and invoke the skill only once that returns them; otherwise the brief runs without Slack.
 context: fork
+agent: beaket:brief
 background: false
 model: claude-sonnet-5-5
 allowed-tools: Bash(node */skills/decision-brief/scripts/beaket.mjs pull), Bash(node */skills/decision-brief/scripts/beaket.mjs read --all), Bash(node */skills/decision-brief/scripts/beaket.mjs search *), ToolSearch, mcp__claude_ai_Slack__slack_search_public, mcp__claude_ai_Slack__slack_search_public_and_private, mcp__claude_ai_Slack__slack_search_channels, mcp__claude_ai_Slack__slack_read_channel, mcp__claude_ai_Slack__slack_read_thread, mcp__claude_ai_Slack__slack_read_canvas, mcp__claude_ai_Slack__slack_list_user_channels
