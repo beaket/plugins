@@ -506,9 +506,9 @@ function index(config) {
 // border lines up with Korean, Japanese and Chinese, which a terminal draws two columns wide. Nothing leaves the machine.
 
 const CARD_WORDS = {
-  ko: { badge: "정할 것", happened: "무슨 일인가", choice: "고를 것", recommend: "추천", open: "아직 안 정해지는 것", kept: "답하면 팀의 결정 기록으로 남아요", tag: "추천", by: "에이전트" },
-  ja: { badge: "決めること", happened: "何が起きたか", choice: "選ぶもの", recommend: "おすすめ", open: "まだ決まらないこと", kept: "答えはチームの決定として残ります", tag: "おすすめ", by: "エージェント" },
-  en: { badge: "To decide", happened: "What happened", choice: "The choice", recommend: "Recommended", open: "Still open", kept: "Your answer is kept as a team decision", tag: "recommended", by: "the agent" },
+  ko: { badge: "정할 것", happened: "무슨 일인가", choice: "고를 것", recommend: "추천", open: "아직 안 정해지는 것", kept: "답하면 팀의 결정 기록으로 남아요", tag: "추천", by: "에이전트", gets: "얻는 것", costs: "드는 것" },
+  ja: { badge: "決めること", happened: "何が起きたか", choice: "選ぶもの", recommend: "おすすめ", open: "まだ決まらないこと", kept: "答えはチームの決定として残ります", tag: "おすすめ", by: "エージェント", gets: "得るもの", costs: "かかるもの" },
+  en: { badge: "To decide", happened: "What happened", choice: "The choice", recommend: "Recommended", open: "Still open", kept: "Your answer is kept as a team decision", tag: "recommended", by: "the agent", gets: "Gets", costs: "Costs" },
 };
 // Color carries meaning only: gains in the terminal's green, costs in its red; the rest is the terminal's own text,
 // bold for what to read first and faint for what supports it. Only the 16 colors and attributes every terminal theme
@@ -581,9 +581,25 @@ function cardLanguage(card) {
   return /[가-힣]/.test(text) ? "ko" : /[぀-ヿ]/.test(text) ? "ja" : "en";
 }
 
+// An option's gains and costs under a label that says which they are, so that they differ without color: a theme
+// for color blindness leaves Claude Code's code colors as they are (beaket/beaket#3139). An item's wrapped lines hang
+// two columns in, since in a diff each line carries its sign.
+function itemLines(w, option, width) {
+  const labelWidth = Math.max(widthOf(w.gets), widthOf(w.costs));
+  const out = [];
+  for (const [kind, label, items] of [["gain", w.gets, listOf(option.gets)], ["cost", w.costs, listOf(option.costs)]])
+    items.forEach((item, n) =>
+      wrapTo(item, width - labelWidth - 4).forEach((l, i) => {
+        const head = n === 0 && i === 0 ? label + " ".repeat(labelWidth - widthOf(label)) : " ".repeat(labelWidth);
+        out.push({ kind, text: `${head}  ${i ? "  " : ""}${l}` });
+      }),
+    );
+  return out;
+}
+
 // The card's lines, each a list of [text, style] parts and a kind (gain, cost or none), the same for every way it is
-// drawn; without signs, an item's wrapped lines hang two columns in, since in a diff each line carries the sign.
-function cardLines(card, inner, { signs = true, focus } = {}) {
+// drawn.
+function cardLines(card, inner, { focus } = {}) {
   const w = CARD_WORDS[cardLanguage(card)];
   const by = card.recommend.by ?? (process.env.CLAUDECODE ? "Claude" : w.by);
   const lines = [];
@@ -604,8 +620,7 @@ function cardLines(card, inner, { signs = true, focus } = {}) {
     const tag = o.name === card.recommend.option ? ` · ${w.tag}` : "";
     const names = wrapTo(o.name, inner - 4 - widthOf(tag));
     names.forEach((l, i) => line([[`  ${i ? " " : on ? "◆" : "◇"} `], [l, "strong"], [i === names.length - 1 ? tag : "", "faint"]]));
-    for (const [sign, kind, items] of [["+", "gain", listOf(o.gets)], ["−", "cost", listOf(o.costs)]])
-      for (const item of items) wrapTo(item, inner - (signs ? 6 : 8)).forEach((l, i) => line([[signs ? `    ${i ? " " : sign} ${l}` : `      ${i ? "  " : ""}${l}`]], kind));
+    for (const { kind, text } of itemLines(w, o, inner - 4)) line([[`    ${text}`]], kind);
   }
   head(w.recommend, by);
   text(`${card.recommend.option}. ${card.recommend.why}`, 2);
@@ -650,7 +665,7 @@ function drawCard(card, { width = 64, color = false } = {}) {
 // costs removed lines, with the sign outside a rule on the left and no right border.
 function diffCard(card, width = 72) {
   const inner = width - 4;
-  const { lines, badge, kept } = cardLines(card, inner, { signs: false });
+  const { lines, badge, kept } = cardLines(card, inner);
   const sign = (l) => (l.kind === "gain" ? "+" : l.kind === "cost" ? "-" : " ");
   const top = ` ╭─ ${badge} ${"─".repeat(Math.max(4, inner - widthOf(badge) - 2))}`;
   const body = lines.map((l) => `${sign(l)}│ ${plainOf(l)}`.replace(/\s+$/, ""));
@@ -665,8 +680,7 @@ function drawOption(card, option, width) {
   const lines = [];
   const tag = option.name === card.recommend.option ? ` · ${w.tag}` : "";
   wrapTo(`${option.name}${tag}`, width - 3).forEach((l, i) => lines.push(` ${i ? " " : "◆"} ${l}`));
-  for (const [sign, items] of [["+", listOf(option.gets)], ["-", listOf(option.costs)]])
-    for (const item of items) wrapTo(item, width - 5).forEach((l, i) => lines.push(`${sign}  ${i ? "  " : ""}${l}`));
+  for (const { kind, text } of itemLines(w, option, width - 3)) lines.push(`${kind === "gain" ? "+" : "-"}  ${text}`);
   lines.push(" ", ` ${w.recommend} · ${by}`);
   for (const l of wrapTo(`${card.recommend.option}. ${card.recommend.why}`, width - 3)) lines.push(`   ${l}`);
   lines.push(" ", ` ● ${w.kept}`);
