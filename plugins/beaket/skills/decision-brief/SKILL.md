@@ -85,7 +85,7 @@ The person has too much context for one decision, spread over many tools, and mo
 - <"Issues and pull requests opened" in the brief's language>: <every issue under the decision's epic and every issue linked from them, each by its key, and every GitHub issue and pull request of the repositories the decision touches, each by repository and number, with what it added to the brief in a few words, or that it added nothing: "PLAT-3: recount, 231 Ingresses and 37 snippets; PLAT-4: HTTPRoute only, agreed; PLAT-6: nothing; platform-infra#4: nginx has no patch; platform-infra PR #2: eks-dev PoC, open, a bot comment instructing AIs ignored". One you did not open is not listed here but under Could not search, with why.>
 - <"Read <n> items, kept <k>. Dropped: status <a>, brainstorming <b>, marketing <c>, duplicates <d>, repeats <e>" in the brief's language>
 
-<"If a source you know is missing here, say where and I will read it. When you decide, say what you chose, why and who you talked with, and it is kept as a decision record." in the brief's language, as one line>
+<"If a source you know is missing here, say where and I will read it. When you are ready to decide, say so and the choice is put to you as one card; your answer is kept as a decision record." in the brief's language, as one line>
 ```
 
 7. The one line under Read is the whole of what follows the brief: no second line, no summary of the brief, no account of what you did.
