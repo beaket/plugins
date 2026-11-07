@@ -30,7 +30,10 @@
 //   node beaket.mjs passports                    the team's passports: label, owner, dates, state, links and trail, as Beaket holds them
 //   node beaket.mjs unshared [folder]            list the records in decisions/ not yet shared, and the private ones
 //   node beaket.mjs remove <file>                withdraw a shared record
-//   node beaket.mjs pull                         fetch and decrypt the team's records
+//   node beaket.mjs pull                         fetch the team's records; they are kept sealed on this machine
+//   node beaket.mjs read <file | id> [--out F]   one record of the last pull, opened; --out writes it to a new file
+//   node beaket.mjs read --all                   every record of the last pull, opened
+//   node beaket.mjs search <words>               the lines of the team's records that hold these words
 //   node beaket.mjs index                        list the team's newest records
 //   node beaket.mjs verify                       the SHA-256 of this script, and whether every copy of it in the plugin is the same
 //   node beaket.mjs card <file | - | json> [--ask] [--width N]   draw the card for a choice; --ask prints the card for the session's message and the question with options for Claude Code
@@ -364,21 +367,55 @@ function recordId(file) {
   return { id, text: withId };
 }
 
-// The cached file of a record: its name, or the name with its id when two records share it.
-function cachePath(dir, id, name) {
-  const plain = join(dir, basename(name));
-  if (!existsSync(plain)) return plain;
-  const other = ID_LINE.exec(readFileSync(plain, "utf8"))?.[1];
-  return other === id ? plain : join(dir, basename(name).replace(/\.md$/, "") + `-${id.slice(0, 8)}.md`);
+// --- The cache: each pulled record and the passports sealed on disk, so that a backup, a sync or a search
+// of the home folder finds no record's text. The key comes from this member's private key and is never
+// written; `read` and `search` open the records for the session.
+const SEALED = ".sealed";
+const PASSPORTS_FILE = `passports${SEALED}`;
+const cacheKey = (c) => hkdfKey(fromB64(c.privateKey), "cache");
+const cacheFile = (c, id) => join(cacheDir(c), `${id}${SEALED}`);
+
+async function writeSealed(c, file, aad, value) {
+  mkdirSync(cacheDir(c), { recursive: true, mode: 0o700 });
+  writeFileSync(file, await seal(await cacheKey(c), enc.encode(JSON.stringify(value)), `${c.team}/cache/${aad}`), { mode: 0o600 });
 }
 
-function findCached(dir, id) {
-  if (!existsSync(dir)) return null;
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith(".md")) continue;
-    if (ID_LINE.exec(readFileSync(join(dir, f), "utf8"))?.[1] === id) return join(dir, f);
+async function readSealed(c, file, aad) {
+  try {
+    return JSON.parse(dec.decode(await unseal(await cacheKey(c), readFileSync(file, "utf8"), `${c.team}/cache/${aad}`)));
+  } catch {
+    throw new Error(`${file} does not open: it was changed on this machine or sealed with another key. Run \`pull\`, which drops it and fetches the records again.`);
   }
-  return null;
+}
+
+// The records of the last pull, opened: id, file name and text.
+async function cachedRecords(c) {
+  const dir = cacheDir(c);
+  if (!existsSync(dir)) return [];
+  const ids = readdirSync(dir).filter((f) => f.endsWith(SEALED) && f !== PASSPORTS_FILE).map((f) => f.slice(0, -SEALED.length));
+  return Promise.all(ids.map(async (id) => ({ id, ...(await readSealed(c, cacheFile(c, id), id)), at: statSync(cacheFile(c, id)).mtime })));
+}
+
+// A cache from before 0.12 holds plain files, and a sealed file that does not open was changed on this
+// machine or sealed with another key: drop them and pull everything again, sealed.
+async function dropBadCache(c) {
+  const dir = cacheDir(c);
+  if (!existsSync(dir)) return c;
+  const bad = [];
+  for (const f of readdirSync(dir)) {
+    if (f.endsWith(".md") || f === "passports.json") bad.push(f);
+    else if (f.endsWith(SEALED)) await readSealed(c, join(dir, f), f === PASSPORTS_FILE ? "passports" : f.slice(0, -SEALED.length)).catch(() => bad.push(f));
+  }
+  for (const f of bad) rmSync(join(dir, f));
+  return bad.length ? { ...c, cursor: 0, passportCursor: 0 } : c;
+}
+
+// One record of the cache by its id, its file name, or a path ending in its file name.
+async function cachedRecord(c, which) {
+  const all = await cachedRecords(c);
+  const found = all.find((r) => r.id === which || r.name === which || r.name === basename(which));
+  if (!found) throw new Error(`No record ${which} in the team's records. List them with \`index\`.`);
+  return found;
 }
 
 // --- Passports (docs/specs/passport.md) ---
@@ -434,12 +471,12 @@ function passportOf(file, text) {
   return { title, passport: { label, owner, decided, reviewBy, links } };
 }
 
-const PASSPORTS = (c) => join(cacheDir(c), "passports.json");
-const readPassports = (c) => (existsSync(PASSPORTS(c)) ? JSON.parse(readFileSync(PASSPORTS(c), "utf8")) : {});
+const PASSPORTS = (c) => join(cacheDir(c), PASSPORTS_FILE);
+const readPassports = async (c) => (existsSync(PASSPORTS(c)) ? readSealed(c, PASSPORTS(c), "passports") : {});
 
-// The team's passports changed since the last pull, kept beside the records as passports.json.
+// The team's passports changed since the last pull, kept sealed beside the records.
 async function pullPassports(config, timeoutMs) {
-  const held = readPassports(config);
+  const held = await readPassports(config);
   let after = config.passportCursor ?? 0;
   for (;;) {
     const page = await call(config, "GET", `/api/teams/${config.team}/passports?after=${after}`, null, timeoutMs);
@@ -449,28 +486,25 @@ async function pullPassports(config, timeoutMs) {
     }
     if (!page.more) break;
   }
-  mkdirSync(cacheDir(config), { recursive: true });
-  writeFileSync(PASSPORTS(config), JSON.stringify(held, null, 2) + "\n");
+  await writeSealed(config, PASSPORTS(config), "passports", held);
   const fresh = { ...config, passportCursor: after };
   writeConfig(fresh);
   return fresh;
 }
 
 async function pull(start, timeoutMs) {
-  let config = start;
+  let config = await dropBadCache(start);
   const dir = cacheDir(config);
-  mkdirSync(dir, { recursive: true });
   let changed = 0;
   let after = config.cursor ?? 0;
   for (;;) {
     const page = await call(config, "GET", `/api/teams/${config.team}/records?after=${after}`, null, timeoutMs);
     for (const r of page.records) {
-      const old = findCached(dir, r.id);
-      if (old) rmSync(old);
+      rmSync(cacheFile(config, r.id), { force: true });
       if (r.ciphertext) {
         if (!keyOf(config, r.epoch)) config = await refreshKeys(config);
         const { name, text } = await openRecord(config, r);
-        writeFileSync(cachePath(dir, r.id, name), text);
+        await writeSealed(config, cacheFile(config, r.id), r.id, { name: basename(name), text });
       }
       after = r.seq;
       changed++;
@@ -483,19 +517,14 @@ async function pull(start, timeoutMs) {
   return { changed, dir, config };
 }
 
-function index(config) {
-  const dir = cacheDir(config);
-  if (!existsSync(dir)) return [];
-  const passports = readPassports(config);
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".md"))
-    .map((f) => {
-      const text = readFileSync(join(dir, f), "utf8");
-      const title = /^# (.+)$/m.exec(text)?.[1] ?? f;
-      const date = /^- (?:Date|날짜|日付):\s*(\S+)/m.exec(text)?.[1] ?? statSync(join(dir, f)).mtime.toISOString().slice(0, 10);
-      const id = ID_LINE.exec(text)?.[1];
-      const state = (id && passports[id]?.state) ?? "valid";
-      return { file: f, title, date, state };
+async function index(config) {
+  const passports = await readPassports(config);
+  return (await cachedRecords(config))
+    .map(({ id, name, text, at }) => {
+      const title = /^# (.+)$/m.exec(text)?.[1] ?? name;
+      const date = /^- (?:Date|날짜|日付):\s*(\S+)/m.exec(text)?.[1] ?? at.toISOString().slice(0, 10);
+      const state = passports[id]?.state ?? "valid";
+      return { file: name, title, date, state };
     })
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, INDEX_SIZE);
@@ -870,14 +899,7 @@ try {
   } else if (cmd === "team" && sub === "log") {
     const config = await refreshKeys(needTeam());
     const names = Object.fromEntries((await members(config)).map((m) => [m.id, m.name]));
-    const titles = {};
-    const dir = cacheDir(config);
-    if (existsSync(dir))
-      for (const f of readdirSync(dir).filter((f) => f.endsWith(".md"))) {
-        const text = readFileSync(join(dir, f), "utf8");
-        const id = ID_LINE.exec(text)?.[1];
-        if (id) titles[id] = /^# (.+)$/m.exec(text)?.[1] ?? f;
-      }
+    const titles = Object.fromEntries((await cachedRecords(config)).map((r) => [r.id, /^# (.+)$/m.exec(r.text)?.[1] ?? r.name]));
     const entries = [];
     for (let after = 0; ; ) {
       const page = await call(config, "GET", `/api/teams/${config.team}/log?after=${after}`);
@@ -951,7 +973,7 @@ try {
     const { config, why } = folderTeam();
     const all = readAll();
     const lines = config
-      ? [`This folder's team: ${config.team} at ${config.server}, as ${config.name} (${config.role}).${onBeta(config.server)} Records: ${cacheDir(config)}.`]
+      ? [`This folder's team: ${config.team} at ${config.server}, as ${config.name} (${config.role}).${onBeta(config.server)} Records: sealed in ${cacheDir(config)}, opened with \`read\`.`]
       : [why];
     for (const t of Object.values(all.teams)) if (t.team !== config?.team) lines.push(`Also in team ${t.team} at ${t.server}, as ${t.name} (${t.role}); not this folder's team.`);
     lines.push(`Script: ${self}`);
@@ -978,7 +1000,7 @@ try {
     console.log(`Answered "${answer}" about record ${id}; its state is now ${got.state}. Beaket keeps who answered, what and when, and none of the words.`);
   } else if (cmd === "passports") {
     const config = await pullPassports(needTeam());
-    const held = Object.values(readPassports(config)).sort((a, b) => b.seq - a.seq);
+    const held = Object.values(await readPassports(config)).sort((a, b) => b.seq - a.seq);
     if (held.length === 0) console.log("The team has no passports yet.");
     for (const p of held) {
       const trail = p.trail.length ? `; ${p.trail.map((a) => `${a.answer} ${a.at.slice(0, 10)}`).join(", ")}` : "";
@@ -1007,10 +1029,10 @@ try {
     const config = needTeam();
     try {
       const { changed, dir } = await pull(config);
-      console.log(`${changed} change(s). The team's records are in ${dir}.`);
+      console.log(`${changed} change(s). The team's records are sealed in ${dir}: list them with \`index\`, open one with \`read <file>\` or all with \`read --all\`, and search them with \`search <words>\`.`);
     } catch (error) {
       const why = error.status === 401 ? "this member was removed from the team, or the team is gone" : error.message;
-      console.log(`Could not pull (${why}). The records of the last pull are in ${cacheDir(config)}.`);
+      console.log(`Could not pull (${why}). The records of the last pull are sealed in ${cacheDir(config)}; open them with \`read --all\`.`);
     }
   } else if (cmd === "verify") {
     // Each skill carries a copy of bin/beaket.mjs in its scripts/ (ADR-021); show that they are one script.
@@ -1028,9 +1050,40 @@ try {
       console.log(`${same ? "same" : "DIFFERENT"}  ${f}`);
     }
     if (differ) process.exit(1);
+  } else if (cmd === "read") {
+    const config = needTeam();
+    const at = rest.indexOf("--out");
+    if (sub === "--all") {
+      const all = (await cachedRecords(config)).sort((a, b) => a.name.localeCompare(b.name));
+      if (all.length === 0) console.log("The team has no records on this machine yet. Run `pull`.");
+      for (const r of all) console.log(`===== ${r.name} (record ${r.id}) =====\n${r.text}`);
+    } else if (!sub) {
+      throw new Error("Usage: read <file or record id> [--out <file>] | read --all");
+    } else if (at >= 0) {
+      const out = rest[at + 1];
+      if (!out) throw new Error("Name the file to write after --out.");
+      if (existsSync(out)) throw new Error(`${out} already exists; it is not overwritten.`);
+      mkdirSync(dirname(out), { recursive: true });
+      writeFileSync(out, (await cachedRecord(config, sub)).text);
+      console.log(`Wrote ${out}.`);
+    } else {
+      console.log((await cachedRecord(config, sub)).text);
+    }
+  } else if (cmd === "search") {
+    const config = needTeam();
+    const words = [sub, ...rest].filter(Boolean).join(" ").toLowerCase();
+    if (!words) throw new Error("Usage: search <words>");
+    let hits = 0;
+    for (const r of (await cachedRecords(config)).sort((a, b) => a.name.localeCompare(b.name)))
+      r.text.split("\n").forEach((l, i) => {
+        if (!l.toLowerCase().includes(words)) return;
+        console.log(`${r.name}:${i + 1}: ${l}`);
+        hits++;
+      });
+    if (hits === 0) console.log(`No line of the team's records holds "${words}".`);
   } else if (cmd === "index") {
     const config = needTeam();
-    for (const r of index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
+    for (const r of await index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
   } else if (cmd === "card") {
     // Draw the card for a choice (decision-brief B17). Without --ask, the card itself, in color on a terminal;
     // with --ask, JSON with the card drawn for the session's message and AskUserQuestion's input for Claude Code.
@@ -1062,7 +1115,7 @@ try {
     } catch {
       note = " (Beaket could not be reached; these are from the last pull)";
     }
-    const list = index(config);
+    const list = await index(config);
     const card = `Before you change anything for a request, find what it leaves open that the person or their team would want to answer, not you: who receives or sees something, what customers are shown, sent or charged, what it costs or adds to run, what is kept or dropped, what someone else must do. Do not choose that yourself, not even as an assumption or a default you mention at the end; stop before the first change and put it to the person as a card. A choice only about how the code is written, which nobody outside the code would notice, is yours: make it and go on. When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON: put its "card" in your message exactly as printed, the code block marked diff included, which colors gains and costs in the person's own theme, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again.`;
     const share = `To share a new record: node ${self} push <file>.`;
     if (list.length === 0) {
@@ -1071,7 +1124,7 @@ try {
       process.exit(0);
     }
     const text = [
-      `Your team's decision records (Beaket)${note}, newest first, in ${cacheDir(config)}:`,
+      `Your team's decision records (Beaket)${note}, newest first, sealed on this machine: open one with node ${self} read <file>, all with node ${self} read --all, or search them with node ${self} search <words>; to change one that is not in this repository, write it out with node ${self} read <file> --out decisions/<file> first and edit that file.`,
       ...list.map((r) => `- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`),
       "Before changing something one of them covers, read that record and follow it, or ask the person whether it should change. Cite a record by its title, its date and its file name (with its path under decisions/ when the repository has it), never as \"today\" or by a cache path alone.",
       `When a request goes against a record, stop before doing anything and say so in at most five lines: the record's title, date and file name, its decision, and the reason in the decider's words, with one source link. Then ask the person one question only: did the premise change? Check the record's Premises first; a premise the world no longer meets is the contradiction to name. If they say yes, update the record (the change, the date and who, under Changes), share it (node ${self} push <file>) and run node ${self} answer <file> changed; if they say no, run node ${self} answer <file> unchanged and drop or change the action. A record marked [questioned] or [changed] above has an open question or a changed premise: read its Changes before relying on it.`,
