@@ -5,6 +5,7 @@ Cut the context of one decision down to what it needs, keep the decision as a re
 ## Skills
 - **decision-brief**: name a decision you must make; it reads Slack, Jira, Confluence, Notion, Google Meet notes and GitHub through your own connectors and gives you one page, each line linked to its source.
 - **decision-record**: say what you chose, why and who you talked with; it drafts the record from the brief, you confirm, and it writes `decisions/<date>-<slug>.md`. A choice you answer on a card is kept from the card and your answer, with no draft to confirm.
+- **what-to-decide**: call Beaket without naming a decision and it shows the one thing your team's records left open, the same one Beaket's page opens on, as a card; your answer is kept as a team decision and that thing is not offered again.
 - **team**: make or join a Beaket team, invite someone, share or withdraw records, see the passports, and answer what leaves your machine. A machine can be in several teams; a repository names its team in `.beaket/team`, and a session reads and shares with that team only after you trusted that file there (`team use`).
 
 ## Install
@@ -17,10 +18,10 @@ In earlier versions, `/plugin marketplace add beaket/plugins`, then `/plugin ins
 ### Pin a release
 For a security review, install from a release tag rather than the default branch:
 ```
-/plugin marketplace add beaket/plugins#v0.13.0
+/plugin marketplace add beaket/plugins#v0.14.0
 /plugin install beaket@beaket
 ```
-From a shell, `claude plugin marketplace add beaket/plugins#v0.13.0` does the same. An organization can allow only that source in its managed settings with `strictKnownMarketplaces: [{"source": "github", "repo": "beaket/plugins", "ref": "v0.13.0"}]`. Auto-update is off for this marketplace unless someone turns it on. Each release is tagged `v<version>` and its notes give the SHA-256 of `bin/beaket.mjs`; `node bin/beaket.mjs verify` prints the hash of the copy you have and checks that every skill's copy is the same. The plugin has no dependencies and installs nothing else.
+From a shell, `claude plugin marketplace add beaket/plugins#v0.14.0` does the same. An organization can allow only that source in its managed settings with `strictKnownMarketplaces: [{"source": "github", "repo": "beaket/plugins", "ref": "v0.14.0"}]`. Auto-update is off for this marketplace unless someone turns it on. Each release is tagged `v<version>` and its notes give the SHA-256 of `bin/beaket.mjs`; `node bin/beaket.mjs verify` prints the hash of the copy you have and checks that every skill's copy is the same. The plugin has no dependencies and installs nothing else.
 
 ## Beta
 Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `beaket.com` later. Set another server with `team create --server <URL>` or `BEAKET_URL`.
