@@ -411,6 +411,21 @@ async function dropBadCache(c) {
   return bad.length ? { ...c, cursor: 0, passportCursor: 0 } : c;
 }
 
+// The record `answer` is about: a file (a bare file name is looked for in decisions/, then in the team's
+// records), or an id. Anything else is refused, so that a mistyped path is not sent as an id (beaket/plugins#26).
+async function answerId(c, which) {
+  const local = [which, join(process.cwd(), "decisions", basename(which))].find((f) => existsSync(f));
+  if (local) {
+    const id = ID_LINE.exec(readFileSync(local, "utf8"))?.[1];
+    if (!id) throw new Error(`${local} was never shared, so it has no passport. Share it first (push).`);
+    return id;
+  }
+  if (/^[0-9a-f-]{36}$/.test(which)) return which;
+  const cached = (await cachedRecords(c)).find((r) => r.name === basename(which));
+  if (cached) return cached.id;
+  throw new Error(`${which} is neither a file here, in decisions/ or in the team's records, nor a record id. Name the record's file (for example decisions/${basename(which)}) or its id.`);
+}
+
 // One record of the cache by its id, its file name, or a path ending in its file name.
 async function cachedRecord(c, which) {
   const all = await cachedRecords(c);
@@ -1046,8 +1061,7 @@ try {
     const config = needTeam();
     const answer = rest[0];
     if (!sub || !["question", "unchanged", "changed"].includes(answer)) throw new Error("Usage: answer <record file or id> question|unchanged|changed");
-    const id = existsSync(sub) ? ID_LINE.exec(readFileSync(sub, "utf8"))?.[1] : sub;
-    if (!id) throw new Error(`${sub} was never shared, so it has no passport. Share it first (push).`);
+    const id = await answerId(config, sub);
     const got = await call(config, "POST", `/api/teams/${config.team}/passports/${id}`, { answer });
     await pullPassports(config);
     console.log(`Answered "${answer}" about record ${id}; its state is now ${got.state}. Beaket keeps who answered, what and when, and none of the words.`);
@@ -1193,7 +1207,8 @@ try {
     // Rules first and the teammates' titles last, inside a fence nobody can guess, so that a title cannot pose
     // as a rule; the whole stays under the 10,000 characters a hook's output may have, dropping the oldest titles.
     const fence = `beaket-records-${b64url(random(6))}`;
-    const lines = list.map((r) => `- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
+    const where = (file) => (existsSync(join(process.cwd(), "decisions", basename(file))) ? `decisions/${basename(file)}` : file);
+    const lines = list.map((r) => `- ${r.title} (${r.date}) — ${where(r.file)}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
     const compose = () =>
       [
         `Your team's decision records (Beaket)${note}, newest first, sealed on this machine: open one with node ${self} read <file>, all with node ${self} read --all, or search them with node ${self} search <words>; to change one that is not in this repository, write it out with node ${self} read <file> --out decisions/<file> first and edit that file.`,
