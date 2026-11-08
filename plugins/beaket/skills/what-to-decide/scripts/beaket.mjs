@@ -38,6 +38,9 @@
 //   node beaket.mjs next [n]                     the one thing left to decide in the team's records, as the page's first screen shows it; n for the one after
 //   node beaket.mjs verify                       the SHA-256 of this script, and whether every copy of it in the plugin is the same
 //   node beaket.mjs card <file | - | json> [--ask] [--width N]   draw the card for a choice; --ask prints the card for the session's message and the question with options for Claude Code
+//   node beaket.mjs hand <file | - | json> [--to <name>] [--dry]   hand a card's question to the team (beaket/beaket#3179): write it as a record left to decide, with no answer, share it, and the first screen offers it; --to names who should answer first; --dry writes the file and shares nothing
+//   node beaket.mjs close <n> <why...>           close the thing to decide `next n` shows, with one line saying it no longer needs deciding; the line stays on its record, and the first screen offers it no more
+//   node beaket.mjs reopen <file | id> <item words...>   reopen a thing to decide closed on that record; a line says so, and the first screen offers it again
 //   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index and the rules, the card for a choice included (--json for GitHub Copilot)
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -476,7 +479,7 @@ function passportOf(file, text) {
   const slugWords = basename(file, ".md").replace(/^\d{4}-\d{2}-\d{2}-/, "").replace(/-/g, " ");
   const head = headOf(text);
   const label = (line(text, ["Label", "라벨", "ラベル"]) ?? (/^# (.+)$/m.test(text) ? title : slugWords)).slice(0, MAX_LABEL);
-  const owner = (line(text, ["Decided by", "결정자", "決定者", "決めた人"]) ?? head.who ?? userInfo().username).slice(0, 80);
+  const owner = (line(text, ["Decided by", "결정자", "決定者", "決めた人"]) ?? head.who ?? line(text, ["Handed by"]) ?? userInfo().username).slice(0, 80);
   const decided = day(line(text, ["Date", "날짜", "日付"])) ?? head.day ?? new Date().toISOString().slice(0, 10);
   const reviewBy = day(line(text, ["Review by", "다시 볼 날", "見直す日"])) ?? null;
   const links = [
@@ -585,17 +588,19 @@ const pageMeta = (text) => {
   }
 };
 
-async function openItems(config, today = new Date().toISOString().slice(0, 10)) {
+async function openItems(config, today = new Date().toISOString().slice(0, 10), me = personName([])) {
   const all = (await cachedRecords(config)).map((r) => {
     const meta = pageMeta(r.text);
     const date = meta.decidedOn ?? day(line(r.text, ["Date", "날짜", "日付"])) ?? headOf(r.text).day ?? r.at.toISOString().slice(0, 10);
     const review = meta.remindedOn ? null : (meta.remindOn ?? day(line(r.text, ["Review by", "다시 볼 날", "見直す日"])) ?? null);
-    return { ...r, date, due: review !== null && review <= today, title: /^# (.+)$/m.exec(r.text)?.[1] ?? r.name };
+    const to = line(r.text, TO_DECIDE);
+    return { ...r, date, due: review !== null && review <= today, title: /^# (.+)$/m.exec(r.text)?.[1] ?? r.name, to, mine: !!to && to.trim().toLowerCase() === me.trim().toLowerCase() };
   });
   const answered = new Set(all.flatMap((r) => itemsUnder(r.text, ANSWERS).map((a) => sameItem(a.replace(/^[^\s:]+:\s+/, "")))));
+  // A question handed to a named person comes first on that person's machine (decisions/2026-11-08-handed-question-names-answerer.md).
   return all
-    .sort((a, b) => Number(b.due) - Number(a.due) || b.date.localeCompare(a.date) || a.id.localeCompare(b.id))
-    .flatMap((r) => itemsUnder(r.text, STILL_OPEN).filter((t) => !answered.has(sameItem(t))).map((item) => ({ record: r.id, file: r.name, title: shown(r.title, 120), item: shown(itemWords(item), 500), due: r.due })));
+    .sort((a, b) => Number(b.mine) - Number(a.mine) || Number(b.due) - Number(a.due) || b.date.localeCompare(a.date) || a.id.localeCompare(b.id))
+    .flatMap((r) => itemsUnder(r.text, STILL_OPEN).filter((t) => !answered.has(sameItem(t))).map((item) => ({ record: r.id, file: r.name, title: shown(r.title, 120), item: shown(itemWords(item), 500), due: r.due, ...(r.to ? { to: shown(r.to, 80) } : {}) })));
 }
 
 // --- The card for a choice (decision-brief B17) ---
@@ -603,10 +608,14 @@ async function openItems(config, today = new Date().toISOString().slice(0, 10)) 
 // border lines up with Korean, Japanese and Chinese, which a terminal draws two columns wide. Nothing leaves the machine.
 
 const CARD_WORDS = {
-  ko: { badge: "정할 것", happened: "무슨 일인가", choice: "고를 것", recommend: "추천", open: "아직 안 정해지는 것", kept: "답하면 팀의 결정 기록으로 남아요", tag: "추천", by: "에이전트" },
-  ja: { badge: "決めること", happened: "何が起きたか", choice: "選ぶもの", recommend: "おすすめ", open: "まだ決まらないこと", kept: "答えはチームの決定として残ります", tag: "おすすめ", by: "エージェント" },
-  en: { badge: "To decide", happened: "What happened", choice: "The choice", recommend: "Recommended", open: "Still open", kept: "Your answer is kept as a team decision", tag: "recommended", by: "the agent" },
+  ko: { badge: "정할 것", happened: "무슨 일인가", choice: "고를 것", recommend: "추천", open: "아직 안 정해지는 것", kept: "답하면 팀의 결정 기록으로 남아요", tag: "추천", by: "에이전트", hand: "팀의 정할 것으로 넘긴다", handNote: "지금 정하지 않습니다. 이 질문이 팀의 첫 화면에 올라 답이 올 때까지, AI는 이 부분을 손대지 않고 나머지만 합니다.", still: "아직 안 정한 것", answers: "답한 것", cardRec: "카드의 추천(Claude)", either: "어느 쪽을 골라도 남는 것", closed: "닫음 (이제 정할 필요 없다)", reopened: "다시 엶" },
+  ja: { badge: "決めること", happened: "何が起きたか", choice: "選ぶもの", recommend: "おすすめ", open: "まだ決まらないこと", kept: "答えはチームの決定として残ります", tag: "おすすめ", by: "エージェント", hand: "チームの決めることに回す", handNote: "今は決めません。この問いがチームの最初の画面に上がり、答えが出るまで AI はこの部分に手をつけず、残りだけ進めます。", still: "まだ決めていないこと", answers: "答えたこと", cardRec: "カードの推奨(Claude)", either: "どちらを選んでも残ること", closed: "閉じた（もう決めなくてよい）", reopened: "再び開いた" },
+  en: { badge: "To decide", happened: "What happened", choice: "The choice", recommend: "Recommended", open: "Still open", kept: "Your answer is kept as a team decision", tag: "recommended", by: "the agent", hand: "Hand it to the team to decide", handNote: "Not decided now. The question goes to the team's first screen; until it is answered, the AI leaves this part alone and does the rest.", still: "Still open", answers: "Answers", cardRec: "The card's recommendation (Claude)", either: "Open whichever is chosen", closed: "Closed (no longer needs deciding)", reopened: "Reopened" },
 };
+// Only the question's options and the record's Still open items carry the words a person reads; the head keys
+// (Label, Date, Status, Handed by, To be decided by) are the record templates' English keys in every language.
+const textLanguage = (text) => (/[가-힣]/.test(text) ? "ko" : /[぀-ヿ]/.test(text) ? "ja" : "en");
+const TO_DECIDE = ["To be decided by", "정할 사람", "決める人"];
 // Color carries meaning only: gains in the terminal's green, costs in its red; the rest is the terminal's own text,
 // bold for what to read first and faint for what supports it. Only the 16 colors and attributes every terminal theme
 // defines, never fixed colors, so the card fits a light, dark or color-blind theme (beaket/beaket#3139).
@@ -784,11 +793,17 @@ function cardQuestion(card, width) {
         question: `${card.title}\n${first}`,
         header: [...w.badge].slice(0, 12).join(""),
         multiSelect: false,
-        options: ordered.map((o) => ({
-          label: o.name === card.recommend.option ? `${o.name} (${w.tag})` : o.name,
-          description: [...listOf(o.gets).map((g) => `+ ${g}`), ...listOf(o.costs).map((c) => `− ${c}`)].join(" "),
-          preview: ["```diff", ...drawOption(card, o, 52), "```"].join("\n"),
-        })),
+        options: [
+          ...ordered.map((o) => ({
+            label: o.name === card.recommend.option ? `${o.name} (${w.tag})` : o.name,
+            description: [...listOf(o.gets).map((g) => `+ ${g}`), ...listOf(o.costs).map((c) => `− ${c}`)].join(" "),
+            preview: ["```diff", ...drawOption(card, o, 52), "```"].join("\n"),
+          })),
+          // Handing the question to the team is not a choice: the session runs `hand` with the same card and leaves
+          // the part that hangs on it untouched (decisions/2026-11-08-agent-question-handed-to-team.md and
+          // 2026-11-08-agent-leaves-handed-part-untouched.md in beaket/beaket).
+          { label: w.hand, description: w.handNote, preview: ["```diff", ...wrapTo(w.hand, 50).map((l, i) => ` ${i ? " " : "◆"} ${l}`), " ", ...wrapTo(w.handNote, 50).map((l) => `   ${l}`), "```"].join("\n") },
+        ],
       },
     ],
   };
@@ -827,6 +842,80 @@ function readCard(source) {
   const card = text.trim().startsWith("{") ? JSON.parse(text) : parseCardLines(text);
   checkCard(card);
   return card;
+}
+
+// --- A question handed to the team (beaket/beaket#3179) ---
+// The card becomes a record with no decision: its title, what happened and the options as the record templates
+// name them, Status open, who handed it and, when named, who should answer first, and the question as the one
+// item of Still open, so that the page's first screen and `next` offer it like any other (page B27). Nothing of
+// the session beyond the card's words goes in.
+function handRecord(card, { to, by, today = new Date().toISOString().slice(0, 10) }) {
+  const w = CARD_WORDS[cardLanguage(card)];
+  const rec = card.recommend.by ?? (process.env.CLAUDECODE ? "Claude" : w.by);
+  const head = [`- Label: ${card.title.slice(0, MAX_LABEL)}`, `- Date: ${today}`, `- Status: open`, `- Handed by: ${by}`, ...(to ? [`- To be decided by: ${to}`] : [])];
+  const options = card.options.map((o) => `- ${o.name}: ${[...listOf(o.gets).map((g) => `+ ${g}`), ...listOf(o.costs).map((c) => `− ${c}`)].join(" ")}`);
+  const open = listOf(card.open);
+  return [
+    `# ${card.title}`,
+    "",
+    ...head,
+    "",
+    `## ${w.happened}`,
+    card.happened.trim(),
+    "",
+    `## ${w.choice}`,
+    card.question.trim(),
+    ...options,
+    "",
+    `${w.cardRec.replace(/Claude/, rec)}: ${card.recommend.option}. ${card.recommend.why}`,
+    ...(open.length ? ["", `${w.either}: ${open.join("; ")}`] : []),
+    "",
+    `## ${w.still}`,
+    `- ${card.question.trim()}`,
+    "",
+  ].join("\n");
+}
+
+const slugOf = (title) => title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+
+// A new file under decisions/ of the folder's repository (the marker's folder), never over one that is there.
+function newRecordFile(marker, today, slug) {
+  const dir = join(marker.dir, "decisions");
+  mkdirSync(dir, { recursive: true });
+  for (let n = 0; ; n++) {
+    const file = join(dir, `${today}-${slug}${n ? `-${n + 1}` : ""}.md`);
+    if (!existsSync(file)) return file;
+  }
+}
+
+// The file of a shared record in this repository's decisions/, written out from the cache when it is not there.
+async function localRecordFile(config, marker, record) {
+  const file = join(marker.dir, "decisions", basename(record.file ?? record.name));
+  if (!existsSync(file)) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, (await cachedRecord(config, record.record ?? record.id)).text);
+  }
+  return file;
+}
+
+// Append a line under a `## <heading>` section, making the section at the end when the record has none.
+function appendUnder(text, heading, lineText) {
+  const found = new RegExp(`^## (?:${heading.join("|")})\\s*$`, "m").exec(text);
+  if (!found) return `${text.replace(/\s*$/, "")}\n\n## ${heading[0]}\n${lineText}\n`;
+  const start = found.index + found[0].length;
+  const next = /^## /m.exec(text.slice(start));
+  const end = next ? start + next.index : text.length;
+  const block = text.slice(start, end).replace(/\s*$/, "");
+  return `${text.slice(0, start)}${block}\n${lineText}\n${next ? "\n" : ""}${text.slice(end).replace(/^\n+/, "")}`;
+}
+
+async function shareRecord(config, file) {
+  const { id, text } = recordId(file);
+  const pushed = await pushRecord(config, id, basename(file), text);
+  const { passport } = passportOf(file, text);
+  const stamped = await call(pushed.config, "PUT", `/api/teams/${pushed.config.team}/passports/${id}`, passport);
+  await pull(pushed.config);
+  return { id, seq: pushed.seq, passport, state: stamped.state };
 }
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -1162,6 +1251,75 @@ try {
       console.log(`(From a teammate's record. ${DATA_NOTE})`);
       console.log(JSON.stringify({ n: at + 1, of: items.length, ...items[at] }, null, 2));
     }
+  } else if (cmd === "hand") {
+    // beaket/beaket#3179: the card's question goes to the team as a thing to decide, with no decision.
+    const { config, marker } = folderTeam();
+    if (!config) throw new Error(folderTeam().why);
+    const args = [sub, ...rest].filter((a) => a !== undefined);
+    const at = args.indexOf("--to");
+    const to = at >= 0 ? args[at + 1] : undefined;
+    if (at >= 0 && !to) throw new Error("Name who should answer after --to.");
+    const source = args.find((a, i) => !a.startsWith("--") && !(at >= 0 && i === at + 1));
+    const card = readCard(source);
+    const today = new Date().toISOString().slice(0, 10);
+    const file = newRecordFile(marker, today, slugOf(card.title) || `handed-${b64url(random(4)).toLowerCase().replace(/[^a-z0-9]/g, "")}`);
+    writeFileSync(file, handRecord(card, { to, by: personName([]), today }));
+    const shownFile = file.startsWith(marker.dir) ? file.slice(marker.dir.length + 1) : file;
+    if (args.includes("--dry")) {
+      console.log(`Wrote ${shownFile}; nothing shared (--dry).`);
+    } else {
+      const shared = await shareRecord(config, file);
+      console.log(`Handed to the team: ${shownFile} (record ${shared.id}, change ${shared.seq}), with no decision in it${to ? `, for ${to} to answer first` : ""}. The team's first screen and \`next\` now offer it. Its passport, in the clear: "${shared.passport.label}", ${shared.passport.owner}, ${shared.passport.decided}, 0 link(s), ${shared.state}; who should answer stays inside the sealed record. Leave the part of the work that hangs on this question untouched, finish the rest, and say what was left out and that it waits on this thing to decide.`);
+    }
+  } else if (cmd === "close") {
+    // beaket/beaket#3179: close the thing to decide `next n` shows, with one line, on the record that left it open
+    // (decisions/2026-11-08-close-open-item-with-a-line.md in beaket/beaket): an Answers line of the record's own, so that
+    // the page and `next` offer it no more, and a Changes line with who, when and the why.
+    const { config, marker } = folderTeam();
+    if (!config) throw new Error(folderTeam().why);
+    const n = Number(sub);
+    const why = rest.join(" ").trim();
+    if (!(Number.isInteger(n) && n >= 1) || !why) throw new Error("Usage: close <n> <why it no longer needs deciding>, n as `next` counts.");
+    const items = await openItems(config);
+    if (items.length === 0) throw new Error("Nothing is left to decide in the team's records on this machine.");
+    const item = items[(n - 1) % items.length];
+    const file = await localRecordFile(config, marker, item);
+    let text = readFileSync(file, "utf8");
+    const w = CARD_WORDS[textLanguage(text)];
+    const today = new Date().toISOString().slice(0, 10);
+    text = appendUnder(text, [w.answers, "답한 것", "Answers", "答えたこと"], `- ${item.record}: ${item.item}`);
+    text = appendUnder(text, ["Changes"], `- ${today} ${personName([])}: ${w.closed}: ${item.item} — ${why}`);
+    writeFileSync(file, text);
+    const shared = await shareRecord(config, file);
+    console.log(`Closed "${item.item}" on ${basename(file)} (record ${shared.id}, change ${shared.seq}): the line stays under its Changes, and the first screen and \`next\` offer it no more. Reopen it with \`reopen ${basename(file)} ${item.item}\`.`);
+  } else if (cmd === "reopen") {
+    // decisions/2026-11-08-reopen-closed-item-on-its-record.md in beaket/beaket: the record's own Answers line goes, and a
+    // Changes line under the one that closed it says who reopened it and when.
+    const { config, marker } = folderTeam();
+    if (!config) throw new Error(folderTeam().why);
+    const words = rest.join(" ").trim();
+    if (!sub || !words) throw new Error("Usage: reopen <record file or id> <the item's words, as the record's Still open has them>");
+    const record = existsSync(sub) ? { name: basename(sub), id: ID_LINE.exec(readFileSync(sub, "utf8"))?.[1] } : await cachedRecord(config, sub);
+    if (!record.id) throw new Error(`${sub} was never shared, so nothing of it was closed for the team.`);
+    const file = existsSync(sub) ? sub : await localRecordFile(config, marker, record);
+    const lines = readFileSync(file, "utf8").split("\n");
+    let inside = false;
+    const at = lines.findIndex((l) => {
+      const h = /^#{1,6}\s+(.+?)\s*$/.exec(l);
+      if (h) inside = ANSWERS.test(h[1]);
+      return inside && new RegExp(`^\\s{0,1}[-*]\\s+${record.id}:\\s+`).test(l) && sameItem(l.replace(/^\s{0,1}[-*]\s+[^\s:]+:\s+/, "")) === sameItem(words);
+    });
+    if (at < 0) throw new Error(`${basename(file)} has no closed item "${words}" of its own. Its closed items are the Answers lines that name its own id.`);
+    lines.splice(at, 1);
+    // An Answers section left with no line goes too, so that the record reads as it did before the close.
+    const headingAt = lines.slice(0, at).findLastIndex((l) => /^#{1,6}\s+/.test(l));
+    const sectionEnd = lines.findIndex((l, i) => i > headingAt && /^#{1,6}\s+/.test(l));
+    if (headingAt >= 0 && !lines.slice(headingAt + 1, sectionEnd < 0 ? undefined : sectionEnd).some((l) => l.trim())) lines.splice(headingAt, (sectionEnd < 0 ? lines.length : sectionEnd) - headingAt);
+    const w = CARD_WORDS[textLanguage(lines.join("\n"))];
+    const text = appendUnder(lines.join("\n"), ["Changes"], `- ${new Date().toISOString().slice(0, 10)} ${personName([])}: ${w.reopened}: ${sameItem(words)}`);
+    writeFileSync(file, text);
+    const shared = await shareRecord(config, file);
+    console.log(`Reopened "${sameItem(words)}" on ${basename(file)} (record ${shared.id}, change ${shared.seq}): the first screen and \`next\` offer it again, and the line that closed it stays under Changes.`);
   } else if (cmd === "index") {
     const config = needTeam();
     for (const r of await index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
@@ -1197,7 +1355,7 @@ try {
       note = " (Beaket could not be reached; these are from the last pull)";
     }
     const list = await index(config);
-    const card = `Before you change anything for a request, find what it leaves open that the person or their team would want to answer, not you: who receives or sees something, what customers are shown, sent or charged, what it costs or adds to run, what is kept or dropped, what someone else must do. Do not choose that yourself, not even as an assumption or a default you mention at the end; stop before the first change and put it to the person as a card. A choice only about how the code is written, which nobody outside the code would notice, is yours: make it and go on. When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON: put its "card" in your message exactly as printed, the code block marked diff included, which colors gains and costs in the person's own theme, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again.`;
+    const card = `Before you change anything for a request, find what it leaves open that the person or their team would want to answer, not you: who receives or sees something, what customers are shown, sent or charged, what it costs or adds to run, what is kept or dropped, what someone else must do. Do not choose that yourself, not even as an assumption or a default you mention at the end; stop before the first change and put it to the person as a card. A choice only about how the code is written, which nobody outside the code would notice, is yours: make it and go on. When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON: put its "card" in your message exactly as printed, the code block marked diff included, which colors gains and costs in the person's own theme, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again. The question's last option hands the question to the team: when they pick it, run node ${self} hand - with the same card on standard input (add --to <name> when they say who should answer), say in one line where it was written and that the team's first screen now offers it, and leave the part of the work that hangs on it untouched: finish the rest, say what was left out and that it waits on this thing to decide, and neither build it provisionally nor assume an answer.`;
     const share = `To share a new record: node ${self} push <file>.`;
     if (list.length === 0) {
       const text = [`This machine is in a Beaket team with no decision records yet${note}.`, card, share].join("\n");
