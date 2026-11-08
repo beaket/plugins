@@ -18,10 +18,10 @@ In earlier versions, `/plugin marketplace add beaket/plugins`, then `/plugin ins
 ### Pin a release
 For a security review, install from a release tag rather than the default branch:
 ```
-/plugin marketplace add beaket/plugins#v0.14.0
+/plugin marketplace add beaket/plugins#v0.14.1
 /plugin install beaket@beaket
 ```
-From a shell, `claude plugin marketplace add beaket/plugins#v0.14.0` does the same. An organization can allow only that source in its managed settings with `strictKnownMarketplaces: [{"source": "github", "repo": "beaket/plugins", "ref": "v0.14.0"}]`. Auto-update is off for this marketplace unless someone turns it on. Each release is tagged `v<version>` and its notes give the SHA-256 of `bin/beaket.mjs`; `node bin/beaket.mjs verify` prints the hash of the copy you have and checks that every skill's copy is the same. The plugin has no dependencies and installs nothing else.
+From a shell, `claude plugin marketplace add beaket/plugins#v0.14.1` does the same. An organization can allow only that source in its managed settings with `strictKnownMarketplaces: [{"source": "github", "repo": "beaket/plugins", "ref": "v0.14.1"}]`. Auto-update is off for this marketplace unless someone turns it on. Each release is tagged `v<version>` and its notes give the SHA-256 of `bin/beaket.mjs`; `node bin/beaket.mjs verify` prints the hash of the copy you have and checks that every skill's copy is the same. The plugin has no dependencies and installs nothing else.
 
 ## Beta
 Teams are made on `stg.beaket.com`, Beaket's beta server. Beaket will run on `beaket.com` later. Set another server with `team create --server <URL>` or `BEAKET_URL`.
