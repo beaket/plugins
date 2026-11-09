@@ -25,7 +25,8 @@
 // or a file not trusted since it changed, means no team: nothing is shown and nothing is pushed.
 //   node beaket.mjs status                       this folder's team and where its records are, and every team this machine is in
 //   node beaket.mjs paths                        the config, cache and private folders of this machine
-//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport
+//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport; a path on this machine or a secret stops it
+//   node beaket.mjs check <file | folder>...     what a push would refuse (a path on this machine, a secret) and what it would only note, with no team; exits 1 on a refusal
 //   node beaket.mjs answer <file or id> <answer>   question | unchanged | changed: answer about a decision; Beaket keeps who, what and when
 //   node beaket.mjs passports                    the team's passports: label, owner, dates, state, links and trail, as Beaket holds them
 //   node beaket.mjs unshared [folder]            list the records in decisions/ not yet shared, and the private ones
@@ -304,6 +305,32 @@ async function openRecord(config, record) {
   return JSON.parse(dec.decode(plain));
 }
 
+// What a record must not carry to the team (beaket/beaket#3197, decisions/2026-11-09-share-check-blocks-paths-and-secrets.md):
+// a path on this machine or a secret stops the push; a contact or an address inside a company is only said.
+const BLOCKED = [
+  // A home folder with a name in it, or a folder under ~ that is not an app's own (~/.config, ~/.cache).
+  ["a path on this machine", /(?:\/Users\/|\/home\/|[A-Za-z]:\\Users\\)[A-Za-z0-9._-]+[\/\\]|(?:^|[\s(\[`'"])~\/[A-Za-z0-9_-]/],
+  ["a private key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
+  ["an access key", /\b(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|xox[abposr]-[A-Za-z0-9-]{10,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{32,}|sk_live_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{35})/],
+  ["a signed token", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
+  ["a token in a link", /[?&](?:token|access_token|api_key|apikey|key|sig|signature|X-Amz-Signature|X-Goog-Signature)=[^\s&)]{8,}/i],
+  ["a password or secret", /\b(?:password|passwd|secret|api[_-]?key|token)\s*[:=]\s*["']?[^\s"']{8,}/i],
+];
+const NOTED = [
+  ["an email address", /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/],
+  ["a phone number", /(?:\+\d{1,3}[\s-]?)?\b0\d{1,2}[\s-]\d{3,4}[\s-]\d{4}\b/],
+  ["an address inside a company", /\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:internal|local|corp|lan|intranet))\b/],
+];
+
+function leaksOf(text) {
+  const lines = text.split("\n");
+  const found = (rules) =>
+    rules.flatMap(([what, re]) => lines.flatMap((l, i) => (re.test(l) ? [{ what, line: i + 1 }] : [])));
+  return { blocked: found(BLOCKED), noted: found(NOTED) };
+}
+
+const leakLines = (name, hits) => hits.map((h) => `  ${name}:${h.line}: ${h.what}`).join("\n");
+
 // A push sealed with an older key is refused (409); fetch the current key and push again.
 async function pushRecord(config, id, name, text) {
   try {
@@ -364,6 +391,11 @@ async function members(config) {
 function recordId(file) {
   const text = readFileSync(file, "utf8");
   if (PRIVATE.test(text)) throw new Error(`${file} is marked private (<!-- beaket-private -->), so it is not shared.`);
+  // Checked before the id is written, so that a refused record is left as it was.
+  const { blocked, noted } = leaksOf(text);
+  if (blocked.length)
+    throw new Error(`Not shared: ${file} holds what must not leave this machine. Take it out (name a document by its title, not its path) and push again.\n${leakLines(file, blocked)}`);
+  if (noted.length) console.error(`Shared with what teammates will read; check that it is meant for them:\n${leakLines(file, noted)}`);
   const found = ID_LINE.exec(text);
   if (found) return { id: found[1], text };
   const id = crypto.randomUUID();
@@ -1283,6 +1315,20 @@ try {
       const why = error.status === 401 ? "this member was removed from the team, or the team is gone" : error.message;
       console.log(`Could not pull (${why}). The records of the last pull are sealed in ${cacheDir(config)}; open them with \`read --all\`.`);
     }
+  } else if (cmd === "check") {
+    // The same check as a push, with no team, for a repository's CI over its decisions/ folder.
+    const files = [sub, ...rest].filter(Boolean).flatMap((f) =>
+      statSync(f).isDirectory() ? readdirSync(f).filter((n) => n.endsWith(".md")).map((n) => join(f, n)) : [f],
+    );
+    let stopped = 0;
+    for (const file of files) {
+      const { blocked, noted } = leaksOf(readFileSync(file, "utf8"));
+      if (blocked.length) console.log(`Would not be shared:\n${leakLines(file, blocked)}`);
+      if (noted.length) console.log(`For teammates to read; check that it is meant for them:\n${leakLines(file, noted)}`);
+      stopped += blocked.length ? 1 : 0;
+    }
+    console.log(`Checked ${files.length} record(s): ${stopped} would not be shared.`);
+    if (stopped) process.exitCode = 1;
   } else if (cmd === "verify") {
     // Each skill carries a copy of bin/beaket.mjs in its scripts/ (ADR-021); show that they are one script.
     const here = dirname(self);
