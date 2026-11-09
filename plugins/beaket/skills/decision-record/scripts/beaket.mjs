@@ -42,7 +42,7 @@
 //   node beaket.mjs close <n> <why...>           close the thing to decide `next n` shows, with one line saying it no longer needs deciding; the line stays on its record, and the first screen offers it no more
 //   node beaket.mjs reopen <file | id> <item words...>   reopen a thing to decide closed on that record; a line says so, and the first screen offers it again
 //   node beaket.mjs session-start [--json]       for the SessionStart hook: pull, then print the index and the rules, the card for a choice included (--json for GitHub Copilot)
-//   node beaket.mjs plain-words [--json]         for a second SessionStart hook: in a folder with a team, the plain-words rules (beaket/beaket#3189), in an output of their own so that they take no room from the records' titles
+//   node beaket.mjs plain-words [--json | --print]   for a second SessionStart hook: in a folder with a team (with --print, in any folder), the plain-words rules (beaket/beaket#3189), in an output of their own so that they take no room from the records' titles
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -556,13 +556,70 @@ async function index(config) {
     .slice(0, INDEX_SIZE);
 }
 
+// --- Beaket's one term table (decisions/2026-11-09-one-term-table-with-keys.md in beaket/beaket, #3194) ---
+// Each thing Beaket names, by an English key: its one name in each language (null where not set yet, plain-words
+// N1), its older names and what the card check does with each: "refuse" a word only Beaket ever used, "note" a word
+// with an ordinary meaning too (decisions/2026-11-09-ambiguous-old-names-only-noted.md), "read" an older heading still
+// read as this one. A third item is the pattern when the word's letters alone would match too much. "heading" marks a
+// record's heading. Keep it JSON: tools/copy-script.mjs copies it to the page without running this file.
+const TERMS = {
+  "toDecide": { "ko": "정할 것", "en": "To decide", "ja": "決めること" },
+  "askTeam": { "ko": "팀에 묻기", "en": "Ask the team", "ja": null },
+  "close": { "ko": "닫기", "en": "Close", "ja": null },
+  "reopen": { "ko": "다시 열기", "en": "Reopen", "ja": null },
+  "todo": { "ko": "할 일", "en": "To do", "ja": "やること", "old": { "ko": [["첫 화면", "note", "첫\\s?화면"]] } },
+  "brief": { "ko": "정리", "en": "Brief", "ja": null, "old": { "ko": [["브리프", "refuse"]] } },
+  "ai": { "ko": "AI", "en": "AI", "ja": "AI", "old": { "ko": [["에이전트", "note"]] } },
+  "conversation": { "ko": "Claude와 나눈 대화", "en": "Conversation with Claude", "ja": null, "old": { "ko": [["세션", "note"]] } },
+  "plugin": { "ko": "Claude 안의 Beaket", "en": "Beaket in Claude", "ja": null },
+  "page": { "ko": "Beaket 웹", "en": "Beaket on the web", "ja": null },
+  "label": { "ko": "짧은 이름", "en": "Label", "ja": null },
+  "map": { "ko": "결정 지도", "en": "Map", "ja": "決定の路線図", "old": { "ko": [["노선도", "refuse"]] } },
+  "toolLink": { "ko": "다른 AI 도구 연결", "en": "Link to another AI tool", "ja": null, "old": { "ko": [["창", "note", "(?<![가-힣])창(?:이|은|을|에|에서|으로|과|도|의)?(?![가-힣])"]] } },
+  "serverSummary": { "ko": "서버가 읽을 수 있는 요약(이름, 날짜, 정한 사람)", "en": "What the server can read (the label, the date, who decided)", "ja": null, "old": { "ko": [["여권", "refuse"]] } },
+  "readPassword": { "ko": "읽기 전용 비밀번호", "en": "Read-only password", "ja": null, "old": { "ko": [["읽기 열쇠", "refuse", "읽기\\s?열쇠"]] } },
+  "teamKey": { "ko": "기록을 여는 열쇠", "en": "The key that opens the records", "ja": null, "old": { "ko": [["팀 키", "refuse", "팀\\s?키(?:가|는|를|로|의|와|도)?(?![가-힣])"]] } },
+  "serverDb": { "ko": "서버의 데이터베이스", "en": "The server's database", "ja": null, "old": { "ko": [["D1", "refuse", "(?<![A-Za-z0-9])D1(?![A-Za-z0-9])"]] } },
+  "wrongQuestion": { "ko": "질문이 아닌데 잘못 올라온 것", "en": "Raised as a question by mistake", "ja": null, "old": { "ko": [["오탐", "refuse"]] } },
+  "readable": { "ko": "누구나 읽을 수 있는 글자", "en": "Text anyone can read", "ja": null, "old": { "ko": [["평문", "refuse"]] } },
+  "threatModel": { "ko": "누구로부터 막을지", "en": "Who it keeps out", "ja": null, "old": { "ko": [["위협 모델", "refuse", "위협\\s?모델"]] } },
+  "insideWords": { "ko": null, "en": null, "ja": null, "instead": "what it means, in words", "old": { "ko": [["과제 1", "refuse", "과제\\s?1(?![0-9])"], ["11-11의 셈", "refuse", "11-11의\\s?셈"]] } },
+  "claudeRec": { "ko": "Claude의 추천", "en": "The card's recommendation (Claude)", "ja": "カードの推奨(Claude)", "old": { "ko": [["카드의 추천(Claude)", "read"]] } },
+  "happened": { "heading": true, "ko": "상황", "en": "What happened", "ja": "何が起きたか", "old": { "ko": [["무슨 일인가", "read"]] } },
+  "choice": { "heading": true, "ko": "고를 것", "en": "The choice", "ja": "選ぶもの" },
+  "chose": { "heading": true, "ko": "정한 것", "en": "Chose", "ja": "決めたこと", "old": { "ko": [["결정", "read"]] } },
+  "why": { "heading": true, "ko": "왜", "en": "Why", "ja": "理由", "old": { "ko": [["이유", "read"]] } },
+  "talkedWith": { "heading": true, "ko": "함께 이야기한 사람", "en": "Talked with", "ja": "話した人", "old": { "ko": [["이야기한 사람", "read"]] } },
+  "changes": { "heading": true, "ko": "앞으로 달라지는 것", "en": "What changes", "ja": "変わること", "old": { "ko": [["바뀌는 것", "read"]] } },
+  "stillOpen": { "heading": true, "ko": "아직 안 정한 것", "en": "Still open", "ja": "まだ決めていないこと", "old": { "ko": [["아직 안 정해지는 것", "read"], ["아직 열린 것", "read"]], "en": [["Open", "read"]], "ja": [["まだ開いていること", "read"]] } },
+  "notChosen": { "heading": true, "ko": "고르지 않은 것", "en": null, "ja": null, "old": { "ko": [["기각한 것", "read"], ["기각한 선택지", "read"]] } },
+  "forAI": { "heading": true, "ko": "AI가 지킬 것", "en": "Details", "ja": "詳細", "old": { "ko": [["세부", "read"]] } },
+  "constraints": { "heading": true, "ko": "지켜야 할 조건", "en": "Constraints", "ja": "制約", "old": { "ko": [["제약", "read"]] } },
+  "premises": { "heading": true, "ko": "이 결정이 맞으려면", "en": "Premises", "ja": "前提", "old": { "ko": [["전제", "read"]] } },
+  "restsOn": { "heading": true, "ko": "바탕이 된 결정", "en": "Rests on", "ja": "前提とする決定", "old": { "ko": [["기대는 결정", "read"]] } },
+  "revisit": { "heading": true, "ko": "다시 볼 때", "en": "Revisit when", "ja": "見直すとき" },
+  "sources": { "heading": true, "ko": "출처", "en": "Sources", "ja": "ソース" },
+  "answers": { "heading": true, "ko": "답한 것", "en": "Answers", "ja": "答えたこと" },
+  "changeLog": { "heading": true, "ko": "변경", "en": "Changes", "ja": null, "old": { "ko": [["변경 기록", "read"]] } }
+};
+
+// A thing's name in a language, and its older names in every language the card check does `check` with.
+const term = (key, lang) => TERMS[key][lang];
+const oldNames = (lang, check) =>
+  Object.entries(TERMS).flatMap(([key, t]) =>
+    (t.old?.[lang] ?? []).filter(([, c]) => c === check).map(([word, , pattern]) => ({ key, word, re: new RegExp(pattern ?? word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s?")), instead: t[lang] ?? t.instead })),
+  );
+// Every name a heading has had in any language, for reading a record of any age (plain-words B14).
+const headingNames = (key) => [...["ko", "en", "ja"].map((l) => TERMS[key][l]), ...Object.values(TERMS[key].old ?? {}).flat().map(([w]) => w)].filter(Boolean);
+const escaped = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 // --- What is left to decide (beaket/beaket#3141, page B27) ---
 // Each item of a record's Still open section that no record answers under its Answers section, the records whose
 // day to look again has come first, then the newest: the same order as the page's first screen, so that both
 // offer the same one (decisions/2026-11-07-first-screen-order.md in beaket/beaket). Nothing leaves the machine.
 // Older Korean headings stay read as the new one (plain-words B14): a shared record is sealed and is never rewritten.
-const STILL_OPEN = /^(아직 안 정한 것|아직 안 정해지는 것|아직 열린 것|Still open|Open|まだ決めていないこと|まだ開いていること)$/i;
-const ANSWERS = /^(답한 것|Answers|答えたこと)$/i;
+const STILL_OPEN = new RegExp(`^(${[...headingNames("stillOpen"), "まだ決まらないこと"].map(escaped).join("|")})$`, "i");
+const ANSWERS = new RegExp(`^(${headingNames("answers").map(escaped).join("|")})$`, "i");
 
 function itemsUnder(text, heading) {
   const out = [];
@@ -610,9 +667,9 @@ async function openItems(config, today = new Date().toISOString().slice(0, 10), 
 // border lines up with Korean, Japanese and Chinese, which a terminal draws two columns wide. Nothing leaves the machine.
 
 const CARD_WORDS = {
-  ko: { badge: "정할 것", happened: "상황", choice: "고를 것", recommend: "추천", open: "아직 안 정한 것", kept: "답하면 팀의 결정 기록으로 남아요", tag: "추천", by: "AI", hand: "지금 안 정하고 팀에 묻는다", handNote: "지금 정하지 않아요. 이 질문이 팀의 할 일에 올라 답이 올 때까지, AI는 이 부분을 손대지 않고 나머지만 해요.", still: "아직 안 정한 것", answers: "답한 것", cardRec: "Claude의 추천", either: "어느 쪽을 골라도 남는 것", closed: "닫았어요 (이제 정할 필요가 없어요)", reopened: "다시 열었어요" },
-  ja: { badge: "決めること", happened: "何が起きたか", choice: "選ぶもの", recommend: "おすすめ", open: "まだ決まらないこと", kept: "答えはチームの決定として残ります", tag: "おすすめ", by: "エージェント", hand: "チームの決めることに回す", handNote: "今は決めません。この問いがチームの最初の画面に上がり、答えが出るまで AI はこの部分に手をつけず、残りだけ進めます。", still: "まだ決めていないこと", answers: "答えたこと", cardRec: "カードの推奨(Claude)", either: "どちらを選んでも残ること", closed: "閉じた（もう決めなくてよい）", reopened: "再び開いた" },
-  en: { badge: "To decide", happened: "What happened", choice: "The choice", recommend: "Recommended", open: "Still open", kept: "Your answer is kept as a team decision", tag: "recommended", by: "the agent", hand: "Hand it to the team to decide", handNote: "Not decided now. The question goes to the team's first screen; until it is answered, the AI leaves this part alone and does the rest.", still: "Still open", answers: "Answers", cardRec: "The card's recommendation (Claude)", either: "Open whichever is chosen", closed: "Closed (no longer needs deciding)", reopened: "Reopened" },
+  ko: { badge: term("toDecide", "ko"), happened: term("happened", "ko"), choice: term("choice", "ko"), recommend: "추천", open: term("stillOpen", "ko"), kept: "답하면 팀의 결정 기록으로 남아요", tag: "추천", by: "AI", hand: "지금 안 정하고 팀에 묻는다", handNote: `지금 정하지 않아요. 이 질문이 팀의 ${term("todo", "ko")}에 올라 답이 올 때까지, AI는 이 부분을 손대지 않고 나머지만 해요.`, still: term("stillOpen", "ko"), answers: term("answers", "ko"), cardRec: term("claudeRec", "ko"), either: "어느 쪽을 골라도 남는 것", closed: "닫았어요 (이제 정할 필요가 없어요)", reopened: "다시 열었어요" },
+  ja: { badge: term("toDecide", "ja"), happened: term("happened", "ja"), choice: term("choice", "ja"), recommend: "おすすめ", open: "まだ決まらないこと", kept: "答えはチームの決定として残ります", tag: "おすすめ", by: "エージェント", hand: "チームの決めることに回す", handNote: "今は決めません。この問いがチームの最初の画面に上がり、答えが出るまで AI はこの部分に手をつけず、残りだけ進めます。", still: term("stillOpen", "ja"), answers: term("answers", "ja"), cardRec: term("claudeRec", "ja"), either: "どちらを選んでも残ること", closed: "閉じた（もう決めなくてよい）", reopened: "再び開いた" },
+  en: { badge: term("toDecide", "en"), happened: term("happened", "en"), choice: term("choice", "en"), recommend: "Recommended", open: term("stillOpen", "en"), kept: "Your answer is kept as a team decision", tag: "recommended", by: "the agent", hand: "Hand it to the team to decide", handNote: "Not decided now. The question goes to the team's first screen; until it is answered, the AI leaves this part alone and does the rest.", still: term("stillOpen", "en"), answers: term("answers", "en"), cardRec: term("claudeRec", "en"), either: "Open whichever is chosen", closed: "Closed (no longer needs deciding)", reopened: "Reopened" },
 };
 // Only the question's options and the record's Still open items carry the words a person reads; the head keys
 // (Label, Date, Status, Handed by, To be decided by) are the record templates' English keys in every language.
@@ -620,13 +677,14 @@ const textLanguage = (text) => (/[가-힣]/.test(text) ? "ko" : /[぀-ヿ]/.test
 const TO_DECIDE = ["To be decided by", "정할 사람", "決める人"];
 // --- Plain words (docs/specs/plain-words.md in beaket/beaket, #3189) ---
 // The short rules every session and every brief is given, in one copy: plain-words prints them beside the card rule,
-// and tools/copy-script.mjs writes them into the decision-brief skill, which runs apart from the session (B2).
-// Keep it a JSON array of strings: copy-script reads it from this file without running it.
+// and tools/copy-script.mjs writes them into the decision-brief skill, which runs apart from the session (B2). The
+// names and the words never written come from TERMS, so that they are listed once.
 const PLAIN_WORDS = [
   "Plain words, for everything a person reads (a card, a record above its part for agents, a brief, a reply), written for a teammate who was not there, a person on the business side included. In Korean:",
   "- Write Korean in 해요체 (~해요, ~했어요, ~할까요?) wherever a person reads it: a card (its title, body, gains and costs), a record above AI가 지킬 것, a brief and every reply; never 합니다체, 한다체 or -십시오. An option's name stays as it is written. Records already written keep their register.",
-  "- One name for each thing: 정할 것; handing it to the team is 팀에 묻기 (the card's option \"지금 안 정하고 팀에 묻는다\"); 닫기 and 다시 열기; what stays undecided is 아직 안 정한 것; the place the page shows first is 할 일; a brief is 정리; an agent is AI; a session is Claude와 나눈 대화; the plugin is Claude 안의 Beaket; the page is Beaket 웹; the card's recommendation is Claude의 추천.",
-  "- Never write these where a person reads; write what follows the arrow: 여권 → 서버가 읽을 수 있는 요약(이름, 날짜, 정한 사람); 창 → 다른 AI 도구 연결; 읽기 열쇠 → 읽기 전용 비밀번호; 팀 키 → 기록을 여는 열쇠; 노선도 → 결정 지도; D1 → 서버의 데이터베이스; 오탐 → 질문이 아닌데 잘못 올라온 것; 평문 → 누구나 읽을 수 있는 글자; 위협 모델 → 누구로부터 막을지; 첫 화면 → 할 일; 브리프 → 정리; 에이전트 → AI; 세션 → Claude와 나눈 대화; 과제 1 and 11-11의 셈 → what they mean, in words. A spec claim ID, an ADR, an issue number, a spec or a file name goes only in a record's part for agents (AI가 지킬 것 and after), where file paths, claim IDs and sources stay.",
+  `- One name for each thing, written as its English name = the Korean one: ${Object.values(TERMS).filter((t) => !t.heading && t.ko && t.en && !t.old?.ko?.some(([, c]) => c === "refuse")).map((t) => `${t.en} = ${t.ko}`).join("; ")}. Handing a question to the team is the card's option "지금 안 정하고 팀에 묻는다".`,
+  `- Never write these where a person reads; write what follows the arrow: ${oldNames("ko", "refuse").map((o) => `${o.word} → ${o.instead}`).join("; ")}. A spec claim ID, an ADR, an issue number, a spec or a file name goes only in a record's part for agents (AI가 지킬 것 and after), where file paths, claim IDs and sources stay.`,
+  `- These have an ordinary meaning too, in which they are fine; when you mean Beaket's thing, write what follows the arrow: ${oldNames("ko", "note").map((o) => `${o.word} → ${o.instead}`).join("; ")}.`,
   "- A card's title asks the question (\"~할까요?\"). A decided record's title says what was decided (\"~하기로 했어요\") and keeps every limit the decision has (우선, 당분간, 방법은 아직 없음); the card's question stays under 고를 것. Neither is framed as \"~할지 정한다\".",
   "- Right after the person answers a card with a choice, say in one line what changes, starting \"그럼 앞으로 …\", and ask nothing; if they correct it, keep the correction in the record as their words.",
   "- One point a sentence, with a person or the AI as the subject and a verb, not a chain of nouns: 검토를 진행해요 → 검토해요; ~에 대한 → 의, 을; ~을 통해 → 로; 해당 기능 → the thing's name; ~하는 것이 중요해요 → what to do; ~에 가까워요 → ~예요; 붙이다, 주입하다 → 넣다, 연결하다.",
@@ -634,25 +692,10 @@ const PLAIN_WORDS = [
   "- Making a line plain never changes how sure it is (검토 중 never becomes 정함, a question never a statement), never drops an option's cost or an item still undecided, and adds no fact, number or question the source does not hold; where the source is unclear or contradicts itself, ask the person instead of choosing a reading. A term kept because a plainer word would hide a cost or a risk is explained in plain words where it first appears."
 ];
 
-// The words of B6 the card check refuses in a Korean card, each with what to write instead. 창 only as a word of its own
-// (창이, 창을, 창으로), never inside another (창문, 창고, 창의), and D1 only as a word in capitals.
-const NOT_PLAIN = [
-  [/여권/, "여권", "서버가 읽을 수 있는 요약(이름, 날짜, 정한 사람)"],
-  [/(?<![가-힣])창(?:이|은|을|에|에서|으로|과|도|의)?(?![가-힣])/, "창", "다른 AI 도구 연결"],
-  [/읽기\s?열쇠/, "읽기 열쇠", "읽기 전용 비밀번호"],
-  [/팀\s?키(?:가|는|를|로|의|와|도)?(?![가-힣])/, "팀 키", "기록을 여는 열쇠"],
-  [/노선도/, "노선도", "결정 지도"],
-  [/(?<![A-Za-z0-9])D1(?![A-Za-z0-9])/, "D1", "서버의 데이터베이스"],
-  [/오탐/, "오탐", "질문이 아닌데 잘못 올라온 것"],
-  [/평문/, "평문", "누구나 읽을 수 있는 글자"],
-  [/위협\s?모델/, "위협 모델", "누구로부터 막을지"],
-  [/첫\s?화면/, "첫 화면", "할 일"],
-  [/브리프/, "브리프", "정리"],
-  [/에이전트/, "에이전트", "AI"],
-  [/세션/, "세션", "Claude와 나눈 대화"],
-  [/과제\s?1(?![0-9])/, "과제 1", "what it means, in words"],
-  [/11-11의\s?셈/, "11-11의 셈", "what it means, in words"],
-];
+// The card check (B3): a word only Beaket ever used refuses a Korean card; a word with an ordinary meaning too is
+// only noted to the session, which rewrites it when it meant Beaket's thing (decisions/2026-11-09-ambiguous-old-names-only-noted.md).
+const NOT_PLAIN = oldNames("ko", "refuse").map((o) => [o.re, o.word, o.instead]);
+const TWO_MEANINGS = oldNames("ko", "note");
 
 // Color carries meaning only: gains in the terminal's green, costs in its red; the rest is the terminal's own text,
 // bold for what to read first and faint for what supports it. Only the 16 colors and attributes every terminal theme
@@ -696,6 +739,16 @@ const listOf = (v) => (Array.isArray(v) ? v : v ? [v] : []).map(String).filter((
 
 // The card's rules (beaket/beaket#3135): one choice, each option named by what it does with what it gets and costs,
 // a recommendation that names one of them, and nothing a person who was not there cannot read.
+const cardWords = (card) =>
+  [card.title, card.happened, card.question, card.recommend?.why, ...listOf(card.open), ...(Array.isArray(card.options) ? card.options : []).flatMap((o) => [o?.name, ...listOf(o?.gets), ...listOf(o?.costs)])].filter(Boolean).join("\n");
+
+// A word with an ordinary meaning too (TWO_MEANINGS): said to the session only, never drawn on the card.
+function cardNotes(card) {
+  if (cardLanguage(card) !== "ko") return [];
+  const words = cardWords(card);
+  return TWO_MEANINGS.filter((o) => o.re.test(words)).map((o) => `"${o.word}" is also an older name of Beaket's "${o.instead}": if you meant that, write "${o.instead}" and draw the card again; in its ordinary meaning, go on.`);
+}
+
 function checkCard(card) {
   const problems = [];
   if (!card.title?.trim()) problems.push("title: the decision to make, in one line");
@@ -713,7 +766,7 @@ function checkCard(card) {
   if (!card.recommend?.option || !names.includes(card.recommend.option)) problems.push(`recommend.option: one of ${names.map((n) => `"${n}"`).join(", ")}`);
   if (!card.recommend?.why?.trim()) problems.push("recommend.why: why you recommend it");
   // Words only an agent reads: code, file names, spec claim IDs, function calls.
-  const words = [card.title, card.happened, card.question, card.recommend?.why, ...listOf(card.open), ...options.flatMap((o) => [o?.name, ...listOf(o?.gets), ...listOf(o?.costs)])].filter(Boolean).join("\n");
+  const words = cardWords(card);
   const jargon = [/`[^`]+`/, /(?:^|[\s("'])[\w./-]*[a-z0-9_-]\.(md|mjs|ts|tsx|json|ya?ml|toml|sql|py|go|rs|sh)\b/, /\b[a-z][\w-]*\/[BN]\d+\b/, /\b[BN]\d{1,3}\b/, /\b\w+\(\)/];
   for (const hit of jargon.map((re) => re.exec(words)?.[0].trim()).filter(Boolean)) problems.push(`"${hit}": say what the thing does, not its file, claim, table or function name`);
   // Plain words B3: a word of B6 above the card's last line, in a Korean card; no check of length or commas.
@@ -1373,16 +1426,19 @@ try {
     const source = args.find((a, i) => !a.startsWith("--") && !(at >= 0 && i === at + 1));
     const card = readCard(source);
     if (args.includes("--ask")) {
-      console.log(JSON.stringify(cardQuestion(card, columnsWanted ?? 72), null, 2));
+      const notes = cardNotes(card);
+      console.log(JSON.stringify({ ...(notes.length ? { notes } : {}), ...cardQuestion(card, columnsWanted ?? 72) }, null, 2));
     } else {
       const color = args.includes("--color") || (process.stdout.isTTY && !process.env.NO_COLOR && !args.includes("--no-color"));
       const width = columnsWanted ?? Math.min(76, process.stdout.columns || 76);
       console.log(drawCard(card, { width, color }).join("\n"));
+      for (const n of cardNotes(card)) console.error(n);
     }
   } else if (cmd === "plain-words") {
     // Printed beside the card rule by a SessionStart hook of its own: a hook's output may hold 10,000 characters, and
     // session-start fills its own with the records' titles. The same condition as the card rule: the folder's team.
-    if (folderTeam().config) {
+    // --print: whatever the folder, for tools/copy-script.mjs.
+    if (sub === "--print" || folderTeam().config) {
       const text = PLAIN_WORDS.join("\n");
       console.log(sub === "--json" ? JSON.stringify({ additionalContext: text }) : text);
     }
@@ -1402,7 +1458,7 @@ try {
       note = " (Beaket could not be reached; these are from the last pull)";
     }
     const list = await index(config);
-    const card = `Before you change anything for a request, find what it leaves open that the person or their team would want to answer, not you: who receives or sees something, what customers are shown, sent or charged, what it costs or adds to run, what is kept or dropped, what someone else must do. Do not choose that yourself, not even as an assumption or a default you mention at the end; stop before the first change and put it to the person as a card. A choice only about how the code is written, which nobody outside the code would notice, is yours: make it and go on. When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line, asked as a question; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON: put its "card" in your message exactly as printed, the code block marked diff included, which colors gains and costs in the person's own theme, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: say in one line what changes, as the plain-words rules say, then keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again. The question's last option hands the question to the team: when they pick it, run node ${self} hand - with the same card on standard input (add --to <name> when they say who should answer), say in one line where it was written and that the team's To do (할 일) now offers it, and leave the part of the work that hangs on it untouched: finish the rest, say what was left out and that it waits on this thing to decide, and neither build it provisionally nor assume an answer.`;
+    const card = `Before you change anything for a request, find what it leaves open that the person or their team would want to answer, not you: who receives or sees something, what customers are shown, sent or charged, what it costs or adds to run, what is kept or dropped, what someone else must do. Do not choose that yourself, not even as an assumption or a default you mention at the end; stop before the first change and put it to the person as a card. A choice only about how the code is written, which nobody outside the code would notice, is yours: make it and go on. When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line, asked as a question; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON; when it has "notes", read them first, draw the card again if a note names what you meant, and never show the notes to the person. Put its "card" in your message exactly as printed, the code block marked diff included, which colors gains and costs in the person's own theme, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: say in one line what changes, as the plain-words rules say, then keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again. The question's last option hands the question to the team: when they pick it, run node ${self} hand - with the same card on standard input (add --to <name> when they say who should answer), say in one line where it was written and that the team's To do (할 일) now offers it, and leave the part of the work that hangs on it untouched: finish the rest, say what was left out and that it waits on this thing to decide, and neither build it provisionally nor assume an answer.`;
     const share = `To share a new record: node ${self} push <file>.`;
     if (list.length === 0) {
       const text = [`This machine is in a Beaket team with no decision records yet${note}.`, card, share].join("\n");
