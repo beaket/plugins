@@ -1196,6 +1196,7 @@ const CHECKS = 3;
 const pluginRoot = () => (basename(dirname(self)) === "scripts" ? join(dirname(self), "..", "..", "..") : join(dirname(self), ".."));
 const korean = (text) => /[가-힣]/.test(text);
 const japanese = (text) => /[ぁ-んァ-ン]/.test(text) && !korean(text);
+const sameLanguage = (line, text) => (korean(text) ? korean(line) : japanese(text) ? japanese(line) : !/[가-힣ぁ-んァ-ン一-龯]/.test(line));
 const confirmedWords = (file) => { const t = readFileSync(file, "utf8"); return korean(t) ? "AI 3번 모두 같음" : japanese(t) ? "AI 3回一致" : "three AI checks agreed"; };
 
 function askAgent(agent, prompt) {
@@ -1234,6 +1235,7 @@ function linkIndex(file) {
 async function findLinks(file) {
   const index = linkIndex(file);
   const record = `decisions/${basename(file)}`;
+  const recordText = readFileSync(file, "utf8");
   let cost = 0;
   const found = await askAgent("link-find", `Record: ${record}\n\nThe team's other decisions (file — title):\n${index.map((d) => `${d.path} — ${d.title}`).join("\n")}`);
   if (found.text === null) throw new Error("Could not run `claude` to find links. Run this inside Claude Code, or leave Rests on out.");
@@ -1249,7 +1251,9 @@ async function findLinks(file) {
       cost += answers.reduce((n, a) => n + a.cost, 0);
       const lines = answers.map((a) => /^(rests|no)\s*:\s*(.+)$/im.exec(a.text ?? ""));
       const yes = lines.filter((m) => m?.[1].toLowerCase() === "rests");
-      return { target, title: index.find((d) => d.path === target).title, yes: yes.length, why: yes[0]?.[2]?.trim() ?? "" };
+      // The reason is read by people on the record's page: one in the record's language, or none (beaket/beaket#3221).
+      const why = yes.map((m) => m[2].trim()).find((w) => sameLanguage(w, recordText)) ?? "";
+      return { target, title: index.find((d) => d.path === target).title, yes: yes.length, why };
     }),
   );
   return {
@@ -1523,7 +1527,7 @@ try {
     const file = sub;
     if (!file || !existsSync(file)) throw new Error("Name the record: links <file>.");
     const result = await findLinks(file);
-    writeRestsOn(file, result.written.map((w) => `- ${w.target} — ${w.why} (${confirmedWords(file)})`));
+    writeRestsOn(file, result.written.map((w) => `- ${w.target}${w.why ? ` — ${w.why}` : ""} (${confirmedWords(file)})`));
     console.log(JSON.stringify(result, null, 2));
   } else if (cmd === "check") {
     // The same check as a push, with no team, for a repository's CI over its decisions/ folder.
