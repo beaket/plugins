@@ -490,8 +490,8 @@ async function cachedRecord(c, which) {
 }
 
 // --- Passports (docs/specs/passport.md) ---
-// A record's passport, read from the record's own lines: a label of a few
-// words (the `Label:` line, else the record's title cut short, else the file name's words), the
+// A record's passport, read from the record's own lines: a label, the record's title cut short (else the file
+// name's words; a record carries no Label line, beaket/beaket#3201, and an older record's is not read), the
 // owner and the day (their lines, else the record's head line "2026-10-21 · 결정: 박서연 (…)", as
 // the page's model writes it; beaket/beaket#3068), the dates, and the links of its Sources, Rests on
 // and Supersedes. Nothing of Decision, Why or Rejected. The label, owner and links go sealed (passportBody).
@@ -530,7 +530,7 @@ function passportOf(file, text) {
   const title = /^# (.+)$/m.exec(text)?.[1] ?? basename(file, ".md");
   const slugWords = basename(file, ".md").replace(/^\d{4}-\d{2}-\d{2}-/, "").replace(/-/g, " ");
   const head = headOf(text);
-  const label = (line(text, ["Label", "짧은 이름", "라벨", "ラベル"]) ?? (/^# (.+)$/m.test(text) ? title : slugWords)).slice(0, MAX_LABEL);
+  const label = (/^# (.+)$/m.test(text) ? title : slugWords).slice(0, MAX_LABEL);
   const owner = (line(text, ["Decided by", "결정자", "決定者", "決めた人"]) ?? head.who ?? line(text, ["Handed by"]) ?? userInfo().username).slice(0, 80);
   const decided = day(line(text, ["Date", "날짜", "日付"])) ?? head.day ?? new Date().toISOString().slice(0, 10);
   const reviewBy = day(line(text, ["Review by", "다시 볼 날", "見直す日"])) ?? null;
@@ -624,7 +624,6 @@ const TERMS = {
   "conversation": { "ko": "Claude와 나눈 대화", "en": "Conversation with Claude", "ja": null, "old": { "ko": [["세션", "note"]] } },
   "plugin": { "ko": "Claude 안의 Beaket", "en": "Beaket in Claude", "ja": null },
   "page": { "ko": "Beaket 웹", "en": "Beaket on the web", "ja": null },
-  "label": { "ko": "짧은 이름", "en": "Label", "ja": null },
   "map": { "ko": "결정 지도", "en": "Map", "ja": "決定の路線図", "old": { "ko": [["노선도", "refuse"]] } },
   "toolLink": { "ko": "다른 AI 도구 연결", "en": "Link to another AI tool", "ja": null, "old": { "ko": [["창", "note", "(?<![가-힣])창(?:이|은|을|에|에서|으로|과|도|의)?(?![가-힣])"]] } },
   "serverSummary": { "ko": "서버가 읽을 수 있는 요약(이름, 날짜, 정한 사람)", "en": "What the server can read (the label, the date, who decided)", "ja": null, "old": { "ko": [["여권", "refuse"]] } },
@@ -723,7 +722,7 @@ const CARD_WORDS = {
   en: { badge: term("toDecide", "en"), happened: term("happened", "en"), choice: term("choice", "en"), recommend: "Recommended", open: term("stillOpen", "en"), kept: "Your answer is kept as a team decision", tag: "recommended", by: "the agent", hand: "Hand it to the team to decide", handNote: "Not decided now. The question goes to the team's first screen; until it is answered, the AI leaves this part alone and does the rest.", still: term("stillOpen", "en"), answers: term("answers", "en"), cardRec: term("claudeRec", "en"), either: "Open whichever is chosen", closed: "Closed (no longer needs deciding)", reopened: "Reopened" },
 };
 // Only the question's options and the record's Still open items carry the words a person reads; the head keys
-// (Label, Date, Status, Handed by, To be decided by) are the record templates' English keys in every language.
+// (Date, Status, Handed by, To be decided by) are the record templates' English keys in every language.
 const textLanguage = (text) => (/[가-힣]/.test(text) ? "ko" : /[぀-ヿ]/.test(text) ? "ja" : "en");
 const TO_DECIDE = ["To be decided by", "정할 사람", "決める人"];
 // --- Plain words (docs/specs/plain-words.md in beaket/beaket, #3189) ---
@@ -996,7 +995,7 @@ function readCard(source) {
 function handRecord(card, { to, by, today = new Date().toISOString().slice(0, 10) }) {
   const w = CARD_WORDS[cardLanguage(card)];
   const rec = card.recommend.by ?? (process.env.CLAUDECODE ? "Claude" : w.by);
-  const head = [`- Label: ${card.title.slice(0, MAX_LABEL)}`, `- Date: ${today}`, `- Status: open`, `- Handed by: ${by}`, ...(to ? [`- To be decided by: ${to}`] : [])];
+  const head = [`- Date: ${today}`, `- Status: open`, `- Handed by: ${by}`, ...(to ? [`- To be decided by: ${to}`] : [])];
   const options = card.options.map((o) => `- ${o.name}: ${[...listOf(o.gets).map((g) => `+ ${g}`), ...listOf(o.costs).map((c) => `− ${c}`)].join(" ")}`);
   const open = listOf(card.open);
   return [
