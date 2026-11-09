@@ -1242,10 +1242,13 @@ async function findLinks(file) {
   const candidates = [...found.text.matchAll(/^candidate:\s*(\S+)/gm)].map((m) => m[1]).filter((c) => known.has(c)).slice(0, 5);
   const checked = await Promise.all(
     candidates.map(async (target) => {
-      const answers = await Promise.all(Array.from({ length: CHECKS }, () => askAgent("link-check", `Record: ${record}\nOther decision: ${target}`)));
+      // One check first: a no already rules out three yeses, so the other checks run only after a yes.
+      const ask = () => askAgent("link-check", `Record: ${record}\nOther decision: ${target}`);
+      const first = await ask();
+      const answers = /^rests:/im.test(first.text ?? "") ? [first, ...(await Promise.all(Array.from({ length: CHECKS - 1 }, ask)))] : [first];
       cost += answers.reduce((n, a) => n + a.cost, 0);
-      const lines = answers.map((a) => /^(rests|no):\s*(.+)$/m.exec(a.text ?? ""));
-      const yes = lines.filter((m) => m?.[1] === "rests");
+      const lines = answers.map((a) => /^(rests|no)\s*:\s*(.+)$/im.exec(a.text ?? ""));
+      const yes = lines.filter((m) => m?.[1].toLowerCase() === "rests");
       return { target, title: index.find((d) => d.path === target).title, yes: yes.length, why: yes[0]?.[2]?.trim() ?? "" };
     }),
   );
