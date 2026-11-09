@@ -22,8 +22,9 @@
 // or a file not trusted since it changed, means no team: nothing is shown and nothing is pushed.
 //   node beaket.mjs status                       this folder's team and where its records are, and every team this machine is in
 //   node beaket.mjs paths                        the config, cache and private folders of this machine
-//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport; a path on this machine, a secret or a decision under Rests on without its reason stops it
-//   node beaket.mjs check <file | folder>...     what a push would refuse (a path on this machine, a secret, a decision under Rests on without its reason) and what it would only note, with no team; exits 1 on a refusal
+//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport; a path on this machine, a secret or a decision under Rests on that `links` did not write stops it
+//   node beaket.mjs links <file>                which decisions a record rests on, found and checked three times by AIs that never saw the conversation; only three yeses are written
+//   node beaket.mjs check <file | folder>...     what a push would refuse (a path on this machine, a secret, a decision under Rests on that `links` did not write) and what it would only note, with no team; exits 1 on a refusal
 //   node beaket.mjs answer <file or id> <answer>   question | unchanged | changed: answer about a decision; Beaket keeps who, what and when
 //   node beaket.mjs passports                    the team's passports: label, owner, dates, state, links and trail, opened here
 //   node beaket.mjs mcp                          the window: an MCP server on standard input and output for another AI on this machine, which reads this folder's team's passports, never a record's text
@@ -44,7 +45,7 @@
 //   node beaket.mjs plain-words [--json | --print]   for a second SessionStart hook: in a folder with a team (with --print, in any folder), the plain-words rules (beaket/beaket#3189), in an output of their own so that they take no room from the records' titles
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -348,23 +349,25 @@ function leaksOf(text) {
   return { blocked: [...found(BLOCKED), ...unreasoned(text)], noted: found(NOTED) };
 }
 
-// A record dated from REASONS_FROM on says, beside each decision under Rests on, why it leans on it: what would
-// have to be decided again if that decision were reversed (beaket/beaket#3205). A line with a link and no such
-// words stops the push; a decision only related goes under Related, which needs none. Older records are left as written.
+// A record dated from REASONS_FROM on names under Rests on only what `links` wrote: a decision three checks by an AI
+// that never saw the conversation all found it rests on (beaket/beaket#3205). Each such
+// line ends with how it was confirmed; any other line, and a Related section, which is no longer written, stops the push.
+// Older records are left as written.
 const REST_ON = ["Rests on", "바탕이 된 결정", "기대는 결정", "前提とする決定"];
+const RELATED = ["Related", "관련 있는 결정", "関連する決定"];
 const REASONS_FROM = "2026-11-10";
+const CONFIRMED = /\((?:AI 3번 모두 같음|three AI checks agreed|AI 3回一致)\)\s*$/;
 function unreasoned(text) {
   const date = day(line(text, ["Date", "날짜", "日付"]));
   if (!date || date < REASONS_FROM) return [];
-  const heading = new RegExp(`^## (?:${REST_ON.join("|")})\\s*$`);
+  const rests = new RegExp(`^## (?:${REST_ON.join("|")})\\s*$`);
+  const related = new RegExp(`^## (?:${RELATED.join("|")})\\s*$`);
   let inside = false;
   return text.split("\n").flatMap((l, i) => {
-    if (/^## /.test(l)) inside = heading.test(l);
-    const links = inside && /^- /.test(l) ? linksOf(l) : [];
-    if (!links.length) return [];
-    const words = links.reduce((s, href) => s.split(href).join(""), l.slice(2)).replace(/[\s`*_()[\]<>—–:;,.-]+/g, "");
-    if (words.length >= 10) return [];
-    return [{ what: "a decision under Rests on without why this one leans on it (what would be decided again if it were reversed); a decision only related goes under Related", line: i + 1 }];
+    if (related.test(l)) return [{ what: "a Related section, which is no longer written; a decision this one rests on is found by `links`", line: i + 1 }];
+    if (/^## /.test(l)) inside = rests.test(l);
+    if (!inside || !/^- /.test(l) || !linksOf(l).length || CONFIRMED.test(l)) return [];
+    return [{ what: "a decision under Rests on that `links` did not write; run `links <file>` and let it write that section", line: i + 1 }];
   });
 }
 
@@ -433,7 +436,7 @@ function recordId(file) {
   // Checked before the id is written, so that a refused record is left as it was.
   const { blocked, noted } = leaksOf(text);
   if (blocked.length)
-    throw new Error(`Not shared: fix these lines of ${file} and push again (take out what must not leave this machine, naming a document by its title, not its path; say beside each decision under Rests on why this one leans on it).\n${leakLines(file, blocked)}`);
+    throw new Error(`Not shared: fix these lines of ${file} and push again (take out what must not leave this machine, naming a document by its title, not its path; let the links command write Rests on).\n${leakLines(file, blocked)}`);
   if (noted.length) console.error(`Shared with what teammates will read; check that it is meant for them:\n${leakLines(file, noted)}`);
   const found = ID_LINE.exec(text);
   if (found) return { id: found[1], text };
@@ -1186,6 +1189,91 @@ async function windowServer() {
 }
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
+// --- Links (beaket/beaket#3205) ---
+// link-find proposes the decisions a record may rest on, from the record and the list of the folder's decisions and
+// ADRs; link-check answers each pair CHECKS times. Only CHECKS yeses are written; anything else is dropped. Both agents run through `claude -p` with only Read, Grep and Glob, in the record's folder.
+const CHECKS = 3;
+const pluginRoot = () => (basename(dirname(self)) === "scripts" ? join(dirname(self), "..", "..", "..") : join(dirname(self), ".."));
+const korean = (text) => /[가-힣]/.test(text);
+const japanese = (text) => /[ぁ-んァ-ン]/.test(text) && !korean(text);
+const confirmedWords = (file) => { const t = readFileSync(file, "utf8"); return korean(t) ? "AI 3번 모두 같음" : japanese(t) ? "AI 3回一致" : "three AI checks agreed"; };
+
+function askAgent(agent, prompt) {
+  return new Promise((resolve) => {
+    const child = spawn("claude", ["-p", "--plugin-dir", pluginRoot(), "--agent", `beaket:${agent}`, "--allowedTools", "Read,Grep,Glob", "--output-format", "json", prompt], { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.on("error", () => resolve({ text: null, cost: 0 }));
+    child.on("close", () => {
+      try {
+        const r = JSON.parse(out);
+        resolve({ text: String(r.result ?? ""), cost: r.total_cost_usd ?? 0 });
+      } catch {
+        resolve({ text: null, cost: 0 });
+      }
+    });
+  });
+}
+
+// The decisions a record could rest on: the other records of its folder and the repository's ADRs, by path and title.
+function linkIndex(file) {
+  const dir = dirname(file);
+  const root = basename(dir) === "decisions" ? dirname(dir) : dir;
+  const list = [];
+  for (const [folder, prefix] of [[dir, "decisions"], [join(root, "docs", "adr"), "docs/adr"]]) {
+    if (!existsSync(folder)) continue;
+    for (const n of readdirSync(folder).filter((n) => n.endsWith(".md")).sort()) {
+      if (join(folder, n) === join(dirname(file), basename(file))) continue;
+      const title = /^# (.+)$/m.exec(readFileSync(join(folder, n), "utf8"))?.[1] ?? n;
+      list.push({ path: `${prefix}/${n}`, title });
+    }
+  }
+  return list;
+}
+
+async function findLinks(file) {
+  const index = linkIndex(file);
+  const record = `decisions/${basename(file)}`;
+  let cost = 0;
+  const found = await askAgent("link-find", `Record: ${record}\n\nThe team's other decisions (file — title):\n${index.map((d) => `${d.path} — ${d.title}`).join("\n")}`);
+  if (found.text === null) throw new Error("Could not run `claude` to find links. Run this inside Claude Code, or leave Rests on out.");
+  cost += found.cost;
+  const known = new Set(index.map((d) => d.path));
+  const candidates = [...found.text.matchAll(/^candidate:\s*(\S+)/gm)].map((m) => m[1]).filter((c) => known.has(c)).slice(0, 5);
+  const checked = await Promise.all(
+    candidates.map(async (target) => {
+      const answers = await Promise.all(Array.from({ length: CHECKS }, () => askAgent("link-check", `Record: ${record}\nOther decision: ${target}`)));
+      cost += answers.reduce((n, a) => n + a.cost, 0);
+      const lines = answers.map((a) => /^(rests|no):\s*(.+)$/m.exec(a.text ?? ""));
+      const yes = lines.filter((m) => m?.[1] === "rests");
+      return { target, title: index.find((d) => d.path === target).title, yes: yes.length, why: yes[0]?.[2]?.trim() ?? "" };
+    }),
+  );
+  return {
+    written: checked.filter((c) => c.yes === CHECKS).map(({ target, title, why }) => ({ target, title, why })),
+    dropped: checked.filter((c) => c.yes < CHECKS).map(({ target, title, yes }) => ({ target, title, yes: `${yes}/${CHECKS}` })),
+    cost: Math.round(cost * 100) / 100,
+  };
+}
+
+function restsOnLines(file) {
+  return section(readFileSync(file, "utf8"), REST_ON).split("\n").filter((l) => /^- /.test(l));
+}
+
+// Write the record's Rests on section with these lines, or take it out when there are none; it goes before Revisit
+// when, Sources, Answers or Changes, whichever comes first, and no Related section is kept.
+function writeRestsOn(file, lines) {
+  let text = readFileSync(file, "utf8");
+  for (const names of [REST_ON, RELATED]) text = text.replace(new RegExp(`^## (?:${names.join("|")})\\s*\\n(?:(?!## ).*\\n?)*`, "m"), "");
+  if (lines.length) {
+    const heading = korean(text) ? "바탕이 된 결정" : japanese(text) ? "前提とする決定" : "Rests on";
+    const block = `## ${heading}\n${lines.join("\n")}\n\n`;
+    const next = /^## (?:Revisit when|다시 볼 때|見直すとき|Sources|출처|ソース|参照|Answers|답한 것|答えたこと|Changes|변경|변경 기록|変更)\s*$/m.exec(text);
+    text = next ? text.slice(0, next.index) + block + text.slice(next.index) : `${text.replace(/\s*$/, "")}\n\n${block}`;
+  }
+  writeFileSync(file, text.replace(/\n{3,}/g, "\n\n").replace(/\s*$/, "\n"));
+}
+
 const self = fileURLToPath(import.meta.url);
 
 try {
@@ -1425,6 +1513,15 @@ try {
       const why = error.status === 401 ? "this member was removed from the team, or the team is gone" : error.message;
       console.log(`Could not pull (${why}). The records of the last pull are sealed in ${cacheDir(config)}; open them with \`read --all\`.`);
     }
+  } else if (cmd === "links") {
+    // Which decisions a record rests on (beaket/beaket#3205): found and checked by AIs that never saw the conversation,
+    // run here so that no step is skipped. `links <file>` writes what three checks all confirmed; a split is dropped,
+    // since even the person who decided could not answer one (beaket/beaket#3205).
+    const file = sub;
+    if (!file || !existsSync(file)) throw new Error("Name the record: links <file>.");
+    const result = await findLinks(file);
+    writeRestsOn(file, result.written.map((w) => `- ${w.target} — ${w.why} (${confirmedWords(file)})`));
+    console.log(JSON.stringify(result, null, 2));
   } else if (cmd === "check") {
     // The same check as a push, with no team, for a repository's CI over its decisions/ folder.
     const files = [sub, ...rest].filter(Boolean).flatMap((f) =>
