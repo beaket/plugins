@@ -626,7 +626,7 @@ const TERMS = {
   "page": { "ko": "Beaket 웹", "en": "Beaket on the web", "ja": null },
   "map": { "ko": "결정 지도", "en": "Map", "ja": "決定の路線図", "old": { "ko": [["노선도", "refuse"]] } },
   "toolLink": { "ko": "다른 AI 도구 연결", "en": "Link to another AI tool", "ja": null, "old": { "ko": [["창", "note", "(?<![가-힣])창(?:이|은|을|에|에서|으로|과|도|의)?(?![가-힣])"]] } },
-  "serverSummary": { "ko": "서버가 읽을 수 있는 요약(이름, 날짜, 정한 사람)", "en": "What the server can read (the label, the date, who decided)", "ja": null, "old": { "ko": [["여권", "refuse"]] } },
+  "serverSummary": { "ko": "서버가 읽을 수 있는 요약(날짜, 상태, 누가 언제 답했는지)", "en": "What the server can read (the dates, the state, who answered when)", "ja": null, "old": { "ko": [["여권", "refuse"]] } },
   "readPassword": { "ko": "읽기 전용 비밀번호", "en": "Read-only password", "ja": null, "old": { "ko": [["읽기 열쇠", "refuse", "읽기\\s?열쇠"]] } },
   "teamKey": { "ko": "기록을 여는 열쇠", "en": "The key that opens the records", "ja": null, "old": { "ko": [["팀 키", "refuse", "팀\\s?키(?:가|는|를|로|의|와|도)?(?![가-힣])"]] } },
   "serverDb": { "ko": "서버의 데이터베이스", "en": "The server's database", "ja": null, "old": { "ko": [["D1", "refuse", "(?<![A-Za-z0-9])D1(?![A-Za-z0-9])"]] } },
