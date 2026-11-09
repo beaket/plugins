@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Beaket team records: share decision records with your team, end-to-end encrypted.
 // Beaket keeps them as ciphertext and never receives a key. Each member has their own.
-// Beside each record Beaket keeps its passport in the clear: a label of a few words, the owner,
-// the dates, a state, the links and who answered what about it. Never the text.
+// Beside each record Beaket keeps its passport: the dates, a state and who answered what about it in
+// the clear, and a label of a few words, the owner and the links sealed with the team key. Never the text.
 //
 //   node beaket.mjs team create [--server URL] [--name N]   make a team; you are its first manager
 //   node beaket.mjs team invite [--manager]                 invite one person; the code goes to the clipboard and a private file
@@ -12,9 +12,6 @@
 //   node beaket.mjs team members                            who is in the team, with their role
 //   node beaket.mjs team remove <name or id>                remove one member (managers): they are refused at once, and new records use a new key
 //   node beaket.mjs team log [--all]                        who joined, pushed, pulled, withdrew and removed what, and when
-//   node beaket.mjs team reader [--print]                   make a read key for another AI (managers): it reads only the passports, through the window
-//   node beaket.mjs team readers                            the team's read keys: who made each, when it was last used, whether it was revoked
-//   node beaket.mjs team revoke-reader <id>                 revoke a read key (managers): the window refuses it at once
 //
 // An invite code opens the team's key once, within a day. It never goes to standard output unless you
 // ask with --print, so that it stays out of an AI assistant's conversation, which is sent to its model.
@@ -28,7 +25,8 @@
 //   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport; a path on this machine or a secret stops it
 //   node beaket.mjs check <file | folder>...     what a push would refuse (a path on this machine, a secret) and what it would only note, with no team; exits 1 on a refusal
 //   node beaket.mjs answer <file or id> <answer>   question | unchanged | changed: answer about a decision; Beaket keeps who, what and when
-//   node beaket.mjs passports                    the team's passports: label, owner, dates, state, links and trail, as Beaket holds them
+//   node beaket.mjs passports                    the team's passports: label, owner, dates, state, links and trail, opened here
+//   node beaket.mjs mcp                          the window: an MCP server on standard input and output for another AI on this machine, which reads this folder's team's passports, never a record's text
 //   node beaket.mjs unshared [folder]            list the records in decisions/ not yet shared, and the private ones
 //   node beaket.mjs remove <file>                withdraw a shared record
 //   node beaket.mjs pull                         fetch the team's records; they are kept sealed on this machine
@@ -61,7 +59,6 @@ const CONFIG = join(CONFIG_DIR, "team.json");
 const MARKER = join(".beaket", "team");
 const CACHE_ROOT = process.env.BEAKET_CACHE_DIR ?? join(homedir(), ".cache", "beaket", "teams");
 const JOIN_FILE = join(CONFIG_DIR, "join-code");
-const READER_FILE = join(CONFIG_DIR, "reader-key");
 // Records the person keeps to themselves, outside any repository.
 const PRIVATE_DIR = join(CONFIG_DIR, "private");
 const ID_LINE = /^<!-- beaket-record: ([0-9a-f-]{36}) -->\n/;
@@ -295,6 +292,28 @@ async function sealRecord(config, id, name, text) {
   return { epoch: config.epoch, nonce: b64(nonce), ciphertext: b64(new Uint8Array(ciphertext)) };
 }
 
+// A passport's label, owner and links, sealed with the team key; Beaket keeps its dates and state in the clear (beaket/beaket#3196).
+const passportAad = (config, id, epoch) => enc.encode(`${config.team}/${id}/${epoch}/passport`);
+
+async function passportBody(config, id, { label, owner, links, ...plain }) {
+  const key = await hkdfKey(keyOf(config, config.epoch), "passports");
+  const nonce = random(12);
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: passportAad(config, id, config.epoch) }, key, enc.encode(JSON.stringify({ label, owner, links })));
+  return { ...plain, sealed: { epoch: config.epoch, nonce: b64(nonce), ciphertext: b64(new Uint8Array(ciphertext)) } };
+}
+
+async function openPassport(config, { sealed, ...p }) {
+  if (!sealed) return p;
+  if (!config.keys?.[sealed.epoch]) config = await refreshKeys(config);
+  const key = await hkdfKey(keyOf(config, sealed.epoch), "passports");
+  try {
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64(sealed.nonce), additionalData: passportAad(config, p.id, sealed.epoch) }, key, fromB64(sealed.ciphertext));
+    return { ...p, ...JSON.parse(dec.decode(plain)) };
+  } catch {
+    return { ...p, label: "", owner: "", links: [] };
+  }
+}
+
 async function openRecord(config, record) {
   const key = await hkdfKey(keyOf(config, record.epoch), "records");
   const plain = await crypto.subtle.decrypt(
@@ -471,11 +490,11 @@ async function cachedRecord(c, which) {
 }
 
 // --- Passports (docs/specs/passport.md) ---
-// What Beaket keeps of a record in the clear, read from the record's own lines: a label of a few
+// A record's passport, read from the record's own lines: a label of a few
 // words (the `Label:` line, else the record's title cut short, else the file name's words), the
 // owner and the day (their lines, else the record's head line "2026-10-21 · 결정: 박서연 (…)", as
 // the page's model writes it; beaket/beaket#3068), the dates, and the links of its Sources, Rests on
-// and Supersedes. Nothing of Decision, Why or Rejected.
+// and Supersedes. Nothing of Decision, Why or Rejected. The label, owner and links go sealed (passportBody).
 
 const MAX_LABEL = 80;
 const line = (text, names) => new RegExp(`^- (?:${names.join("|")}):\\s*(.+?)\\s*$`, "m").exec(text)?.[1];
@@ -533,7 +552,7 @@ async function pullPassports(config, timeoutMs) {
   for (;;) {
     const page = await call(config, "GET", `/api/teams/${config.team}/passports?after=${after}`, null, timeoutMs);
     for (const p of page.passports) {
-      held[p.id] = p;
+      held[p.id] = await openPassport(config, p);
       after = p.seq;
     }
     if (!page.more) break;
@@ -1038,9 +1057,112 @@ async function shareRecord(config, file) {
   const { id, text } = recordId(file);
   const pushed = await pushRecord(config, id, basename(file), text);
   const { passport } = passportOf(file, text);
-  const stamped = await call(pushed.config, "PUT", `/api/teams/${pushed.config.team}/passports/${id}`, passport);
+  const stamped = await call(pushed.config, "PUT", `/api/teams/${pushed.config.team}/passports/${id}`, await passportBody(pushed.config, id, passport));
   await pull(pushed.config);
   return { id, seq: pushed.seq, passport, state: stamped.state };
+}
+
+// --- The window: an MCP server over standard input and output, one JSON-RPC message per line (docs/specs/window.md).
+const WINDOW_RESULTS = 20;
+
+function told(passports) {
+  const lines = passports.map((p) => {
+    const flag = p.state === "questioned" ? " (questioned: someone asked whether a premise still holds; not yet answered)" : p.state === "changed" ? " (changed: a premise changed after it was decided)" : "";
+    const links = (p.links ?? []).map((l) => `${l.rel} ${l.href}`).join("; ");
+    return `- "${p.label}": decided by ${p.owner} on ${p.decided}${p.reviewBy ? `, to be reviewed by ${p.reviewBy}` : ""}, ${p.state}${flag}. Record ${p.id}.${links ? ` Links: ${links}.` : ""}`;
+  });
+  return [
+    passports.length ? `${passports.length} decision(s) of this team:` : "No decision of this team matches.",
+    ...lines,
+    "This window gives the passports of the decisions, not their text. Read a decision where it lives, at its links, with your own access, and name its owner and date when you answer.",
+  ].join("\n");
+}
+
+async function windowServer() {
+  const { config, why } = folderTeam();
+  const held = async () => {
+    if (!config) throw new Error(why);
+    const fresh = await pullPassports(config, HOOK_TIMEOUT_MS).catch(() => config);
+    return Object.values(await readPassports(fresh)).filter((p) => p.state !== "withdrawn");
+  };
+  const tools = [
+    {
+      name: "find_decisions",
+      title: "Find decisions",
+      description: "Find this team's decisions whose label, owner or links hold every word given (an issue number, a page URL, a system, a person); with no words, the newest. Returns passports only: label, owner, day decided, day to review, state, links and who answered what. Never the decision's text.",
+      inputSchema: { type: "object", properties: { words: { type: "string", maxLength: 200, description: "Words to match, separated by spaces" }, state: { type: "string", enum: ["valid", "questioned", "changed"], description: "Only decisions in this state" } } },
+      annotations: { readOnlyHint: true },
+    },
+    {
+      name: "get_decision",
+      title: "Get a decision",
+      description: "The passport of one decision of this team, by its record id, with who answered what about it and when. Never the decision's text.",
+      inputSchema: { type: "object", properties: { id: { type: "string", description: "The record id, as find_decisions gives it" } }, required: ["id"] },
+      annotations: { readOnlyHint: true },
+    },
+  ];
+  const callTool = async (name, args = {}) => {
+    const all = await held();
+    if (name === "find_decisions") {
+      const words = String(args.words ?? "").toLowerCase().split(/\s+/).filter(Boolean).slice(0, 10);
+      const hay = (p) => [p.label, p.owner, ...(p.links ?? []).map((l) => l.href)].join(" ").toLowerCase();
+      const found = all
+        .filter((p) => (!args.state || p.state === args.state) && words.every((w) => hay(p).includes(w)))
+        .sort((a, b) => b.decided.localeCompare(a.decided) || b.seq - a.seq)
+        .slice(0, WINDOW_RESULTS);
+      return { content: [{ type: "text", text: told(found) }], structuredContent: { passports: found } };
+    }
+    if (name === "get_decision") {
+      const p = all.find((x) => x.id === args.id);
+      if (!p) return { content: [{ type: "text", text: "This team has no decision with that id." }], isError: true };
+      return { content: [{ type: "text", text: told([p]) }], structuredContent: { passports: [p] } };
+    }
+    throw Object.assign(new Error(`No tool ${name}.`), { code: -32602 });
+  };
+  const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
+  const answer = async (msg) => {
+    if (msg.method === "initialize")
+      return {
+        protocolVersion: msg.params?.protocolVersion ?? "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "beaket", version: "1.0.0" },
+        instructions: "Beaket keeps the passports of a team's decisions (label, owner, dates, state, links). Ask it whether a decision exists, who made it and when, and where it is written; then read it at its links with the user's own access.",
+      };
+    if (msg.method === "ping") return {};
+    if (msg.method === "tools/list") return { tools };
+    if (msg.method === "tools/call") {
+      try {
+        return await callTool(msg.params?.name, msg.params?.arguments);
+      } catch (error) {
+        if (error.code) throw error;
+        return { content: [{ type: "text", text: error.message }], isError: true };
+      }
+    }
+    throw Object.assign(new Error(`Method not found: ${msg.method}`), { code: -32601 });
+  };
+  let buffer = "";
+  for await (const chunk of process.stdin) {
+    buffer += chunk;
+    let at;
+    while ((at = buffer.indexOf("\n")) >= 0) {
+      const lineText = buffer.slice(0, at).trim();
+      buffer = buffer.slice(at + 1);
+      if (!lineText) continue;
+      let msg;
+      try {
+        msg = JSON.parse(lineText);
+      } catch {
+        send({ id: null, error: { code: -32700, message: "Parse error" } });
+        continue;
+      }
+      if (msg.id === undefined) continue; // a notification
+      try {
+        send({ id: msg.id, result: await answer(msg) });
+      } catch (error) {
+        send({ id: msg.id, error: { code: error.code ?? -32603, message: error.message } });
+      }
+    }
+  }
 }
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
@@ -1214,43 +1336,11 @@ try {
       console.log(`${e.at.slice(0, 16).replace("T", " ")} UTC  ${by}  ${e.action}${subject ? ` ${subject}` : ""}`);
     }
     if (shown.length < entries.length) console.log(`(${entries.length - shown.length} earlier line(s); --all shows them)`);
-  } else if (cmd === "team" && sub === "reader") {
-    // The window (docs/specs/window.md): a read key for another vendor's AI, which gets passports and links, never text.
-    const config = needTeam();
-    if (config.role !== "manager") throw new Error("Only a manager of the team can make a read key. Ask one of them.");
-    const id = randomId();
-    const token = b64url(random(32));
-    const made = await call(config, "POST", `/api/teams/${config.team}/readers`, { id, tokenHash: sha256(token) });
-    const key = `${id}.${token}`;
-    mkdirSync(CONFIG_DIR, { recursive: true });
-    writeFileSync(READER_FILE, key + "\n", { mode: 0o600 });
-    chmodSync(READER_FILE, 0o600);
-    const copied = rest.includes("--print") ? false : toClipboard(key);
-    const url = `${config.server}${made.url}`;
-    console.log(
-      [
-        `Made read key ${id}. It reads this team's passports (label, owner, dates, state, links), never a record's text, and can change nothing.`,
-        `The window: ${url} (MCP over streamable HTTP). The other tool sends the header \`Authorization: Bearer <key>\`.`,
-        rest.includes("--print") ? `The key: ${key}` : `The key is ${copied ? "on your clipboard and " : ""}in ${READER_FILE}, readable only by you; paste it into the other tool's settings, not into a conversation.`,
-        `For example, in Claude Code: claude mcp add --transport http beaket-decisions ${url} --header "Authorization: Bearer <key>"`,
-        `Revoke it with \`team revoke-reader ${id}\`.`,
-      ].join("\n"),
-    );
-  } else if (cmd === "team" && sub === "readers") {
-    const config = await refreshKeys(needTeam());
-    const names = Object.fromEntries((await members(config)).map((m) => [m.id, m.name]));
-    const { readers } = await call(config, "GET", `/api/teams/${config.team}/readers`);
-    if (readers.length === 0) console.log("The team has no read keys.");
-    for (const r of readers) {
-      const state = r.revokedAt ? `revoked ${r.revokedAt.slice(0, 10)}` : r.usedAt ? `last used ${r.usedAt.slice(0, 16).replace("T", " ")} UTC` : "never used";
-      console.log(`- ${r.id}: made by ${names[r.createdBy] ?? r.createdBy} on ${r.createdAt.slice(0, 10)}, ${state}`);
-    }
-  } else if (cmd === "team" && sub === "revoke-reader") {
-    const config = needTeam();
-    if (config.role !== "manager") throw new Error("Only a manager of the team can revoke a read key. Ask one of them.");
-    if (!rest[0]) throw new Error("Name the read key to revoke, by id (see `team readers`).");
-    await call(config, "DELETE", `/api/teams/${config.team}/readers/${rest[0]}`);
-    console.log(`Revoked read key ${rest[0]}. The window refuses it from now on.`);
+  } else if (cmd === "mcp") {
+    // The window (beaket/beaket#3196, docs/specs/window.md): another vendor's AI on this machine asks about this
+    // folder's team's decisions over MCP on standard input and output, and gets passports and links, never a
+    // record's text, opened here; Beaket's server holds their words only sealed and cannot answer it.
+    await windowServer();
   } else if (cmd === "status") {
     const { config, why } = folderTeam();
     const all = readAll();
@@ -1267,8 +1357,8 @@ try {
       const pushed = await pushRecord(config, id, basename(file), text);
       config = pushed.config;
       const { passport } = passportOf(file, text);
-      const stamped = await call(config, "PUT", `/api/teams/${config.team}/passports/${id}`, passport);
-      console.log(`Shared ${file} (record ${id}, change ${pushed.seq}). Its passport, in the clear: "${passport.label}", ${passport.owner}, ${passport.decided}, ${passport.links.length} link(s), ${stamped.state}.`);
+      const stamped = await call(config, "PUT", `/api/teams/${config.team}/passports/${id}`, await passportBody(config, id, passport));
+      console.log(`Shared ${file} (record ${id}, change ${pushed.seq}). Its passport: "${passport.label}", ${passport.owner} and ${passport.links.length} link(s) sealed; ${passport.decided} and ${stamped.state} in the clear.`);
     }
     await pull(config);
   } else if (cmd === "answer") {
@@ -1408,7 +1498,7 @@ try {
       console.log(`Wrote ${shownFile}; nothing shared (--dry).`);
     } else {
       const shared = await shareRecord(config, file);
-      console.log(`Handed to the team: ${shownFile} (record ${shared.id}, change ${shared.seq}), with no decision in it${to ? `, for ${to} to answer first` : ""}. The team's first screen and \`next\` now offer it. Its passport, in the clear: "${shared.passport.label}", ${shared.passport.owner}, ${shared.passport.decided}, 0 link(s), ${shared.state}; who should answer stays inside the sealed record. Leave the part of the work that hangs on this question untouched, finish the rest, and say what was left out and that it waits on this thing to decide.`);
+      console.log(`Handed to the team: ${shownFile} (record ${shared.id}, change ${shared.seq}), with no decision in it${to ? `, for ${to} to answer first` : ""}. The team's first screen and \`next\` now offer it. Its passport: "${shared.passport.label}" and ${shared.passport.owner} sealed, ${shared.passport.decided} and ${shared.state} in the clear; who should answer stays inside the sealed record. Leave the part of the work that hangs on this question untouched, finish the rest, and say what was left out and that it waits on this thing to decide.`);
     }
   } else if (cmd === "close") {
     // beaket/beaket#3179: close the thing to decide `next n` shows, with one line, on the record that left it open
