@@ -22,8 +22,8 @@
 // or a file not trusted since it changed, means no team: nothing is shown and nothing is pushed.
 //   node beaket.mjs status                       this folder's team and where its records are, and every team this machine is in
 //   node beaket.mjs paths                        the config, cache and private folders of this machine
-//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport; a path on this machine or a secret stops it
-//   node beaket.mjs check <file | folder>...     what a push would refuse (a path on this machine, a secret) and what it would only note, with no team; exits 1 on a refusal
+//   node beaket.mjs push <file>...               encrypt and share decision records (never one marked private), each with its passport; a path on this machine, a secret or a decision under Rests on without its reason stops it
+//   node beaket.mjs check <file | folder>...     what a push would refuse (a path on this machine, a secret, a decision under Rests on without its reason) and what it would only note, with no team; exits 1 on a refusal
 //   node beaket.mjs answer <file or id> <answer>   question | unchanged | changed: answer about a decision; Beaket keeps who, what and when
 //   node beaket.mjs passports                    the team's passports: label, owner, dates, state, links and trail, opened here
 //   node beaket.mjs mcp                          the window: an MCP server on standard input and output for another AI on this machine, which reads this folder's team's passports, never a record's text
@@ -345,7 +345,27 @@ function leaksOf(text) {
   const lines = text.split("\n");
   const found = (rules) =>
     rules.flatMap(([what, re]) => lines.flatMap((l, i) => (re.test(l) ? [{ what, line: i + 1 }] : [])));
-  return { blocked: found(BLOCKED), noted: found(NOTED) };
+  return { blocked: [...found(BLOCKED), ...unreasoned(text)], noted: found(NOTED) };
+}
+
+// A record dated from REASONS_FROM on says, beside each decision under Rests on, why it leans on it: what would
+// have to be decided again if that decision were reversed (beaket/beaket#3205). A line with a link and no such
+// words stops the push; a decision only related goes under Related, which needs none. Older records are left as written.
+const REST_ON = ["Rests on", "바탕이 된 결정", "기대는 결정", "前提とする決定"];
+const REASONS_FROM = "2026-11-10";
+function unreasoned(text) {
+  const date = day(line(text, ["Date", "날짜", "日付"]));
+  if (!date || date < REASONS_FROM) return [];
+  const heading = new RegExp(`^## (?:${REST_ON.join("|")})\\s*$`);
+  let inside = false;
+  return text.split("\n").flatMap((l, i) => {
+    if (/^## /.test(l)) inside = heading.test(l);
+    const links = inside && /^- /.test(l) ? linksOf(l) : [];
+    if (!links.length) return [];
+    const words = links.reduce((s, href) => s.split(href).join(""), l.slice(2)).replace(/[\s`*_()[\]<>—–:;,.-]+/g, "");
+    if (words.length >= 10) return [];
+    return [{ what: "a decision under Rests on without why this one leans on it (what would be decided again if it were reversed); a decision only related goes under Related", line: i + 1 }];
+  });
 }
 
 const leakLines = (name, hits) => hits.map((h) => `  ${name}:${h.line}: ${h.what}`).join("\n");
@@ -413,7 +433,7 @@ function recordId(file) {
   // Checked before the id is written, so that a refused record is left as it was.
   const { blocked, noted } = leaksOf(text);
   if (blocked.length)
-    throw new Error(`Not shared: ${file} holds what must not leave this machine. Take it out (name a document by its title, not its path) and push again.\n${leakLines(file, blocked)}`);
+    throw new Error(`Not shared: fix these lines of ${file} and push again (take out what must not leave this machine, naming a document by its title, not its path; say beside each decision under Rests on why this one leans on it).\n${leakLines(file, blocked)}`);
   if (noted.length) console.error(`Shared with what teammates will read; check that it is meant for them:\n${leakLines(file, noted)}`);
   const found = ID_LINE.exec(text);
   if (found) return { id: found[1], text };
@@ -536,7 +556,7 @@ function passportOf(file, text) {
   const reviewBy = day(line(text, ["Review by", "다시 볼 날", "見直す日"])) ?? null;
   const links = [
     ...linksOf(section(text, ["Sources", "출처", "ソース", "参照"])).map((href) => ({ rel: "source", href })),
-    ...linksOf(section(text, ["Rests on", "바탕이 된 결정", "기대는 결정", "前提とする決定"])).map((href) => ({ rel: "rests-on", href })),
+    ...linksOf(section(text, REST_ON)).map((href) => ({ rel: "rests-on", href })),
     ...linksOf(line(text, ["Supersedes", "대체하는 결정", "置き換える決定"]) ?? "").map((href) => ({ rel: "supersedes", href })),
   ].slice(0, 50);
   return { title, passport: { label, owner, decided, reviewBy, links } };
@@ -647,6 +667,7 @@ const TERMS = {
   "constraints": { "heading": true, "ko": "지켜야 할 조건", "en": "Constraints", "ja": "制約", "old": { "ko": [["제약", "read"]] } },
   "premises": { "heading": true, "ko": "이 결정이 맞으려면", "en": "Premises", "ja": "前提", "old": { "ko": [["전제", "read"]] } },
   "restsOn": { "heading": true, "ko": "바탕이 된 결정", "en": "Rests on", "ja": "前提とする決定", "old": { "ko": [["기대는 결정", "read"]] } },
+  "related": { "heading": true, "ko": "관련 있는 결정", "en": "Related", "ja": "関連する決定" },
   "revisit": { "heading": true, "ko": "다시 볼 때", "en": "Revisit when", "ja": "見直すとき" },
   "sources": { "heading": true, "ko": "출처", "en": "Sources", "ja": "ソース" },
   "answers": { "heading": true, "ko": "답한 것", "en": "Answers", "ja": "答えたこと" },
