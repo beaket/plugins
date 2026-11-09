@@ -2,9 +2,12 @@
 // Copy plugins/beaket/bin/beaket.mjs into each skill's scripts/, so that a skill finds its script in its
 // own folder in every tool (Claude Code, GitHub Copilot, Codex), and write the script's plain-words rules (PLAIN_WORDS)
 // into the decision-brief skill between its plain-words markers, since that skill runs apart from the session that
-// is given them (beaket/beaket#3189). With --check, only say which copy differs.
+// is given them (beaket/beaket#3189). With --page, also write the term table (TERMS) as JSON to the page's copy in
+// beaket/beaket, so that the page names each thing as the plugin does (beaket/beaket#3194). With --check, only say
+// which copy differs.
 //
-//   node tools/copy-script.mjs [--check]
+//   node tools/copy-script.mjs [--check] [--page <beaket repo>/app/page/terms.json]
+import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,10 +30,8 @@ for (const skill of readdirSync(join(plugin, "skills"))) {
   }
 }
 
-// The plain-words rules: the one copy is the JSON array PLAIN_WORDS in the script, read here without running the script.
-const array = /^const PLAIN_WORDS = (\[[\s\S]*?\n\]);$/m.exec(text);
-if (!array) throw new Error(`${source} has no PLAIN_WORDS array`);
-const plain = JSON.parse(array[1]).join("\n");
+// The plain-words rules, as the script prints them: PLAIN_WORDS, with its names taken from TERMS.
+const plain = execFileSync(process.execPath, [source, "plain-words", "--print"], { encoding: "utf8" }).trimEnd();
 const brief = join(plugin, "skills", "decision-brief", "SKILL.md");
 const skill = readFileSync(brief, "utf8");
 const START = "<!-- plain-words: written by tools/copy-script.mjs from PLAIN_WORDS in bin/beaket.mjs; change it there -->";
@@ -46,6 +47,23 @@ if (fresh !== skill) {
   } else {
     writeFileSync(brief, fresh);
     console.log(`wrote the plain-words rules into ${brief}`);
+  }
+}
+// The term table, the JSON object TERMS in the script, read here without running the script.
+const at2 = process.argv.indexOf("--page");
+if (at2 >= 0) {
+  const page = process.argv[at2 + 1];
+  const table = /^const TERMS = (\{[\s\S]*?\n\});$/m.exec(text);
+  if (!page || !table) throw new Error(page ? `${source} has no TERMS object` : "--page takes the page's terms.json");
+  const json = `${JSON.stringify(JSON.parse(table[1]), null, 2)}\n`;
+  if (existsSync(page) && readFileSync(page, "utf8") === json) {
+    // the same
+  } else if (check) {
+    console.error(`${page} differs from TERMS in ${source}`);
+    stale++;
+  } else {
+    writeFileSync(page, json);
+    console.log(`wrote the term table to ${page}`);
   }
 }
 process.exit(stale ? 1 : 0);
