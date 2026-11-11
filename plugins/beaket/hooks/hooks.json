@@ -4,7 +4,8 @@
       {
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/beaket.mjs\" session-start", "timeout": 10 },
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/beaket.mjs\" plain-words", "timeout": 5 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/beaket.mjs\" plain-words", "timeout": 5 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/beaket.mjs\" bundle-rule", "timeout": 5 }
         ]
       }
     ]

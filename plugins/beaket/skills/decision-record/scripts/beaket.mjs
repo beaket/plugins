@@ -38,6 +38,8 @@
 //   node beaket.mjs next [n]                     the one thing left to decide in the team's records, as the page's first screen shows it; n for the one after
 //   node beaket.mjs verify                       the SHA-256 of this script, and whether every copy of it in the plugin is the same
 //   node beaket.mjs card <file | - | json> [--ask] [--width N]   draw the card for a choice; --ask prints the card for the session's message and the question with options for Claude Code
+//   node beaket.mjs choices [--base REF | -]       the changed lines of the kinds people care about (data, database structure, money, what customers see, outside services, defaults), from the diff against where the branch started; - reads a diff on standard input
+//   node beaket.mjs bundle <file | -> [--ask]      draw the bundle of what the AI chose, for the author to answer before review; --ask prints it with one question per choice for Claude Code
 //   node beaket.mjs hand <file | - | json> [--to <name>] [--dry]   hand a card's question to the team (beaket/beaket#3179): write it as a record left to decide, with no answer, share it, and the first screen offers it; --to names who should answer first; --dry writes the file and shares nothing
 //   node beaket.mjs close <n> <why...>           close the thing to decide `next n` shows, with one line saying it no longer needs deciding; the line stays on its record, and the first screen offers it no more
 //   node beaket.mjs reopen <file | id> <item words...>   reopen a thing to decide closed on that record; a line says so, and the first screen offers it again
@@ -45,7 +47,7 @@
 //   node beaket.mjs plain-words [--json | --print]   for a second SessionStart hook: in a folder with a team (with --print, in any folder), the plain-words rules (beaket/beaket#3189), in an output of their own so that they take no room from the records' titles
 import { webcrypto as crypto, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -766,6 +768,15 @@ const PLAIN_WORDS = [
   "- Making a line plain never changes how sure it is (검토 중 never becomes 정함, a question never a statement), never drops an option's cost or an item still undecided, and adds no fact, number or question the source does not hold; where the source is unclear or contradicts itself, ask the person instead of choosing a reading. A term kept because a plainer word would hide a cost or a risk is explained in plain words where it first appears."
 ];
 
+// The bundle's rule (beaket/beaket#3238): printed by its own SessionStart hook, beside the card's.
+const BUNDLE_RULE = [
+  "At the end of the work, before you say it is done and before a pull request is opened, show the author the bundle of what you chose alone (beaket/beaket#3238).",
+  "- Run node ${self} choices, alone: it lists the changed lines of the kinds people care about, found from the diff, not from what you remember choosing. For each hit that is a real choice, write one plain line of what was chosen, never a file name. No real choice: say in one line that there was none to check, and stop here.",
+  "- Draw them with node ${self} bundle - --ask, run alone, the bundle on standard input through a quoted heredoc (<<'BUNDLE'), one part per line, in the person's language: \"change: \" what the change does, in a few words; then for each choice \"choice: \" what was chosen, \"kind: \" one of data, schema, money, seen, outside, default, \"keep: \" the value chosen in a word or two, \"other: \" another way you weighed, only when there was one, \"why: \" your reason, and \"where: \" file:line. Put its \"card\" in your message exactly as printed, its \"where\" lines right under it as plain text, and call AskUserQuestion with its \"questions\" exactly as printed.",
+  "- Apply each answer. Keep: change nothing. Change (to the other way, or as the notes say): change that part and check it again. Hand to the team: draw a card for that one choice and run node ${self} hand - with it; the part stays as you built it, with a comment in the code that it is temporary until the team answers (decisions/2026-11-08-agent-leaves-handed-part-untouched.md, changed 2026-11-11). A choice skipped is not answered: keep nothing for it.",
+  "- Keep the answers as one record for the change with the decision-record skill (decisions/2026-11-11-one-record-per-change.md), with no draft to confirm: its title says what the change settled, What happened says what the change does, The choice and Chose list each choice with its answer, Still open lists what was handed. No file name in it. Put the record file in the same pull request, and at the top of the pull request's description a plain summary made from the record (decisions/2026-11-11-answers-in-the-pull-request.md).",
+];
+
 // The card check (B3): a word only Beaket ever used refuses a Korean card; a word with an ordinary meaning too is
 // only noted to the session, which rewrites it when it meant Beaket's thing (decisions/2026-11-09-ambiguous-old-names-only-noted.md).
 const NOT_PLAIN = oldNames("ko", "refuse").map((o) => [o.re, o.word, o.instead]);
@@ -1009,6 +1020,180 @@ function readCard(source) {
   const card = text.trim().startsWith("{") ? JSON.parse(text) : parseCardLines(text);
   checkCard(card);
   return card;
+}
+
+// --- The bundle of what the AI chose (beaket/beaket#3238, ADR-028) ---
+// At the end of the work, before review is asked for, the author answers what the AI chose alone. The choices are
+// found from the diff by kind, not from what the AI remembers choosing (decisions/2026-11-11-find-ai-choices-by-kind-first.md),
+// hardest to undo first; at most four are asked at once; where each is goes on lines outside the box, for the author
+// only, never into the record (decisions/2026-11-11-code-location-outside-the-box.md).
+
+const KINDS = [
+  { key: "data", ko: "남기거나 보내는 데이터", ja: "保存・送信・記録するデータ", en: "data stored, sent or logged" },
+  { key: "schema", ko: "데이터베이스 구조", ja: "データベースの構造", en: "database structure" },
+  { key: "money", ko: "돈", ja: "お金", en: "money" },
+  { key: "seen", ko: "고객에게 보이는 것", ja: "お客さまに見えるもの", en: "what customers see" },
+  { key: "outside", ko: "외부 서비스", ja: "外部のサービス", en: "an outside service" },
+  { key: "default", ko: "기본값", ja: "既定値・上限", en: "a default or a limit" },
+];
+const kindOf = (k) => KINDS.find((x) => x.key === k || x.ko === k || x.ja === k || x.en === k);
+
+const SKIP_FILE = /(^|\/)(decisions|node_modules|dist|build|vendor|\.git)\/|(\.test\.|\.spec\.|__tests__\/|(^|\/)tests?\/)|(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|go\.sum|poetry\.lock)$|\.(md|txt|lock|snap|svg|png|jpe?g|gif|ico)$/;
+const UI_FILE = /\.(tsx|jsx|vue|svelte|html?|hbs|ejs|erb|liquid|mjml|astro)$|(^|\/)(locales?|i18n|messages|translations?|emails?|templates?)\//;
+const DEPS_FILE = /(^|\/)(package\.json|requirements[\w-]*\.txt|pyproject\.toml|go\.mod|Cargo\.toml|Gemfile|composer\.json)$/;
+
+// One added line's kind, hardest to undo first, or none. Wide on purpose: the session drops what is not a choice.
+function lineKind(file, line) {
+  if (/(^|\/)(migrations?|schema)(\/|\.)|\.sql$|\.prisma$/i.test(file) || /\b(create|alter|drop)\s+table\b|\badd\s+column\b/i.test(line)) return "schema";
+  if (/\b(console\.(log|info|warn|error)|logger\.\w+|log\.(info|warn|error|debug))\s*\(|\b(localStorage|sessionStorage|document\.cookie|setCookie)\b|\b(insert\s+into|update\s+\w+\s+set|delete\s+from)\b|\.(insert|upsert|save|put|delete)\s*\(|\b(sendMail|sendEmail|send_email|postMessage)\s*\(/i.test(line)) return "data";
+  if (/\b(price|amount|currency|fee|charge|billing|payment|invoice|tax|discount|refund|subtotal|cents?)\b|[₩$€£¥]\s?\d/i.test(line)) return "money";
+  if (DEPS_FILE.test(file) && /^\s*["']?[@\w./-]+["']?\s*[:=]\s*["']?[\^~>=<]*\d/.test(line)) return "outside";
+  if (/https?:\/\/(?!localhost|127\.0\.0\.1|0\.0\.0\.0|example\.(com|org))[\w-]+(\.[\w-]+)+/i.test(line) || /\b(fetch|axios(\.\w+)?|got|ky)\s*\(/.test(line)) return "outside";
+  if (UI_FILE.test(file) && (/[가-힣぀-ヿ一-鿿]/.test(line) || />\s*[A-Za-z][^<>{}]*\s[^<>{}]*</.test(line) || /["'`][A-Za-z][^"'`]*\s[^"'`]*["'`]/.test(line))) return "seen";
+  if (/\bsubject\s*[:=]/i.test(line)) return "seen";
+  if (/\b\w*(timeout|retr(y|ies)|limit|max|min|ttl|interval|delay|size|count|days?|hours?|minutes?|seconds?|threshold|quota|rate|expir\w*|port|batch|backoff|ttl)\w*\s*[:=]\s*-?\d/i.test(line) || /^\s*(export\s+)?(const|let|var)\s+[A-Z][A-Z0-9_]{2,}\s*=\s*-?\d/.test(line)) return "default";
+  return null;
+}
+
+// The changed lines of the kinds people care about, from a unified diff: one hit per kind for lines of the same
+// file within three lines of each other, with where it is and up to three of its lines.
+function choicesOf(diff) {
+  const hits = [];
+  let file = null;
+  let at = 0;
+  for (const raw of diff.split("\n")) {
+    if (raw.startsWith("+++ ")) {
+      file = raw.slice(4).replace(/^b\//, "").trim();
+      if (file === "/dev/null") file = null;
+      continue;
+    }
+    if (raw.startsWith("--- ")) continue;
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw);
+    if (hunk) {
+      at = Number(hunk[1]);
+      continue;
+    }
+    if (!file || SKIP_FILE.test(file)) continue;
+    if (raw.startsWith("+")) {
+      const line = raw.slice(1);
+      const kind = line.trim() ? lineKind(file, line) : null;
+      if (kind) {
+        const last = hits.at(-1);
+        if (last && last.file === file && last.kind === kind && at - last.end <= 3) {
+          last.end = at;
+          if (last.lines.length < 3) last.lines.push(line.trim().slice(0, 160));
+        } else hits.push({ kind, file, line: at, end: at, lines: [line.trim().slice(0, 160)] });
+      }
+      at++;
+    } else if (!raw.startsWith("-") && !raw.startsWith("\\")) at++;
+  }
+  const order = KINDS.map((k) => k.key);
+  return hits.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind)).map(({ end, ...h }) => ({ ...h, where: `${h.file}:${h.line}` }));
+}
+
+// What this branch changed against where it started, uncommitted work and new files included.
+function changeDiff(base) {
+  const git = (...a) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  let from = base;
+  if (!from)
+    for (const ref of ["origin/HEAD", "origin/main", "main", "origin/master", "master"]) {
+      try {
+        from = git("merge-base", "HEAD", ref).trim();
+        break;
+      } catch {}
+    }
+  let diff = git("diff", "--unified=0", "--no-color", "--no-ext-diff", from ?? "HEAD");
+  for (const f of git("ls-files", "--others", "--exclude-standard").split("\n").filter(Boolean)) {
+    try {
+      const body = readFileSync(f, "utf8");
+      if (body.includes("\0")) continue;
+      const lines = body.split("\n");
+      diff += `\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}`;
+    } catch {}
+  }
+  return diff;
+}
+
+const BUNDLE_WORDS = {
+  ko: { badge: "AI가 정한 것", unit: "개", change: "이번 변경", ask: "AI가 혼자 고른 것이에요. 검토를 요청하기 전에 하나씩 답해 주세요.", other: "다른 길", why: "Claude가 고른 이유", rest: (n) => `나머지 ${n}개는 AI가 정한 대로 두었어요`, none: "이번 변경에서 확인할 선택은 없어요", keep: "그대로 둔다", keepNote: "AI가 고른 대로 두고, 확인했다고 남겨요", to: "바꾼다", toNote: "다른 길로 바꾸고, 그 부분을 다시 확인해요", change2: "바꾼다 (어떻게 바꿀지 메모에 적어 주세요)", change2Note: "메모대로 고치고, 그 부분을 다시 확인해요", hand: "지금 안 정하고 팀에 묻는다", handNote: `정할 사람에게 넘겨요. 답이 올 때까지 이 부분은 AI가 만든 대로 두고 임시라고 표시해요.`, where: "어디에 있나" },
+  ja: { badge: "AIが決めたこと", unit: "件", change: "今回の変更", ask: "AIがひとりで選んだことです。レビューを頼む前に、ひとつずつ答えてください。", other: "別の道", why: "Claudeが選んだ理由", rest: (n) => `残りの${n}件はAIが決めたままにしました`, none: "今回の変更に確かめる選択はありません", keep: "そのままにする", keepNote: "AIの選んだとおりにし、確かめたと残します", to: "変える", toNote: "別の道に変え、その部分をもう一度確かめます", change2: "変える（どう変えるかメモに書いてください）", change2Note: "メモのとおりに直し、その部分をもう一度確かめます", hand: "今は決めずチームに聞く", handNote: "決める人に回します。答えが出るまで、この部分はAIが作ったままにし、仮だと印をつけます。", where: "場所" },
+  en: { badge: "What the AI chose", unit: "", change: "This change", ask: "The AI chose these alone. Answer each before you ask for review.", other: "Other way", why: "Why Claude chose it", rest: (n) => `The other ${n} were left as the AI chose`, none: "No choice to check in this change", keep: "Keep it", keepNote: "Leave it as the AI chose, and note that you checked it", to: "Change to", toNote: "Change it to the other way, and check that part again", change2: "Change it (say how in the notes)", change2Note: "Change it as the notes say, and check that part again", hand: "Hand it to the team to decide", handNote: "Goes to the person who should decide. Until then the part stays as the AI built it, marked temporary.", where: "Where" },
+};
+
+// The bundle as lines, one part per line, as a card is: change:, then per choice choice:, kind:, keep:, other:, why:, where:.
+function parseBundleLines(text) {
+  const bundle = { items: [] };
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const kv = /^([a-z]+):\s*(.*)$/.exec(line);
+    if (!kv) throw new Error(`"${line}" is not a part of the bundle (change:, choice:, kind:, keep:, other:, why:, where:, lang:).`);
+    const [, key, value] = kv;
+    if (key === "choice") bundle.items.push({ choice: value });
+    else if (key === "change" || key === "lang") bundle[key] = value;
+    else if (["kind", "keep", "other", "why", "where"].includes(key)) {
+      const item = bundle.items.at(-1);
+      if (!item) throw new Error(`"${key}:" comes before any choice: line.`);
+      item[key] = value;
+    } else throw new Error(`"${key}:" is not a part of the bundle.`);
+  }
+  return bundle;
+}
+
+function checkBundle(bundle) {
+  const problems = [];
+  if (!bundle.change?.trim()) problems.push("change: what the change does, in a few plain words");
+  for (const [i, item] of bundle.items.entries()) {
+    if (!item.choice?.trim()) problems.push(`choice ${i + 1}: what was chosen, in one plain line`);
+    if (!kindOf(item.kind)) problems.push(`choice ${i + 1} kind: one of ${KINDS.map((k) => k.key).join(", ")}`);
+  }
+  // A person reads everything but where: no code, file names or function calls there (the card's own check).
+  const words = [bundle.change, ...bundle.items.flatMap((i) => [i.choice, i.keep, i.other, i.why])].filter(Boolean).join("\n");
+  const jargon = [/`[^`]+`/, /(?:^|[\s("'])[\w./-]*[a-z0-9_-]\.(md|mjs|js|ts|tsx|jsx|json|ya?ml|toml|sql|py|go|rs|sh)\b/, /\b\w+\(\)/];
+  for (const hit of jargon.map((re) => re.exec(words)?.[0].trim()).filter(Boolean)) problems.push(`"${hit}": say what it does; the file and line go under where:`);
+  if (textLanguage(words) === "ko") for (const [re, word, instead] of NOT_PLAIN) if (re.test(words)) problems.push(`"${word}" → "${instead}"`);
+  if (problems.length) throw new Error(`The bundle is not ready:\n- ${problems.join("\n- ")}`);
+}
+
+// What the session shows: the bundle as a box for its message, the where lines under it, and one question per
+// choice for AskUserQuestion, hardest to undo first, four at most.
+function bundleQuestion(bundle, width = 72) {
+  const lang = BUNDLE_WORDS[bundle.lang] ? bundle.lang : textLanguage(`${bundle.change} ${bundle.items.map((i) => i.choice).join(" ")}`);
+  const w = BUNDLE_WORDS[lang];
+  const kept = CARD_WORDS[lang].kept;
+  const order = KINDS.map((k) => k.key);
+  const items = bundle.items.map((i) => ({ ...i, kind: kindOf(i.kind).key })).sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+  if (!items.length) return { card: w.none, where: [], questions: [] };
+  const asked = items.slice(0, 4);
+  const inner = width - 4;
+  const body = [];
+  const text = (s, indent = 0) => wrapTo(s, inner - indent).forEach((l) => body.push(`${" ".repeat(indent)}${l}`));
+  text(`${w.change} · ${bundle.change}`);
+  text(w.ask);
+  asked.forEach((item, n) => {
+    body.push("");
+    const head = wrapTo(`${item.choice} · ${kindOf(item.kind)[lang]}`, inner - 3);
+    head.forEach((l, i) => body.push(`${i ? "   " : `${n + 1}  `}${l}`));
+    if (item.other) text(`${w.other} · ${item.other}`, 3);
+    if (item.why) text(`${w.why} · ${item.why}`, 3);
+  });
+  if (items.length > asked.length) (body.push(""), text(w.rest(items.length - asked.length)));
+  const count = `${items.length}${w.unit}`;
+  const top = ` ╭─ ${w.badge} · ${count} ${"─".repeat(Math.max(4, inner - widthOf(w.badge) - widthOf(count) - 5))}`;
+  const card = ["```diff", top, ...body.map((l) => ` │ ${l}`.replace(/\s+$/, "")), " │", ` ╰─ ${kept}`, "```"].join("\n");
+  const where = items.filter((i) => i.where).map((i) => `${items.indexOf(i) + 1} · ${i.where}`);
+  const questions = asked.map((item, n) => ({
+    question: `${n + 1}. ${item.choice}\n${kindOf(item.kind)[lang]}${item.keep ? ` · ${item.keep}` : ""}`,
+    header: [...`${w.badge} ${n + 1}`].slice(0, 12).join(""),
+    multiSelect: false,
+    options: [
+      { label: item.keep ? `${w.keep} (${item.keep})` : w.keep, description: w.keepNote },
+      ...(item.other ? [{ label: `${w.to}: ${item.other}`, description: w.toNote }] : []),
+      { label: w.change2, description: w.change2Note },
+      { label: w.hand, description: w.handNote },
+    ],
+  }));
+  return { card, where: where.length ? [`${w.where}`, ...where] : [], questions };
 }
 
 // --- A question handed to the team (beaket/beaket#3179) ---
@@ -1676,6 +1861,29 @@ try {
   } else if (cmd === "index") {
     const config = needTeam();
     for (const r of await index(config)) console.log(`- ${r.title} (${r.date}) — ${r.file}${r.state !== "valid" ? ` [${r.state}]` : ""}`);
+  } else if (cmd === "choices") {
+    // What the bundle asks about, found from the diff and not from what the agent remembers (beaket/beaket#3238).
+    const args = [sub, ...rest].filter((a) => a !== undefined);
+    const at = args.indexOf("--base");
+    const diff = args.includes("-") ? readFileSync(0, "utf8") : changeDiff(at >= 0 ? args[at + 1] : undefined);
+    const hits = choicesOf(diff);
+    console.log(JSON.stringify({ count: hits.length, choices: hits.slice(0, 20), ...(hits.length > 20 ? { more: hits.length - 20 } : {}) }, null, 2));
+  } else if (cmd === "bundle") {
+    // Draw the bundle of what the AI chose (beaket/beaket#3238); --ask adds AskUserQuestion's input.
+    const args = [sub, ...rest].filter((a) => a !== undefined);
+    const source = args.find((a) => !a.startsWith("--"));
+    const text = !source || source === "-" ? readFileSync(0, "utf8") : readFileSync(source, "utf8");
+    const bundle = parseBundleLines(text);
+    checkBundle(bundle);
+    const out = bundleQuestion(bundle);
+    if (args.includes("--ask")) console.log(JSON.stringify(out, null, 2));
+    else console.log([out.card.replace(/^```diff\n|\n```$/g, ""), ...out.where].join("\n"));
+  } else if (cmd === "bundle-rule") {
+    // The bundle's rule, by a SessionStart hook of its own so that the record titles keep their room in the other.
+    if (folderTeam().config) {
+      const text = BUNDLE_RULE.join("\n").replaceAll("${self}", self);
+      console.log(sub === "--json" ? JSON.stringify({ additionalContext: text }) : text);
+    }
   } else if (cmd === "card") {
     // Draw the card for a choice (decision-brief B17). Without --ask, the card itself, in color on a terminal;
     // with --ask, JSON with the card drawn for the session's message and AskUserQuestion's input for Claude Code.
@@ -1718,7 +1926,7 @@ try {
       note = " (Beaket could not be reached; these are from the last pull)";
     }
     const list = await index(config);
-    const card = `Before you change anything for a request, find what it leaves open that the person or their team would want to answer, not you: who receives or sees something, what customers are shown, sent or charged, what it costs or adds to run, what is kept or dropped, what someone else must do. Do not choose that yourself, not even as an assumption or a default you mention at the end; stop before the first change and put it to the person as a card. A choice only about how the code is written, which nobody outside the code would notice, is yours: make it and go on. When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line, asked as a question; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON; when it has "notes", read them first, draw the card again if a note names what you meant, and never show the notes to the person. Put its "card" in your message exactly as printed, the code block marked diff included, which colors gains and costs in the person's own theme, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: say in one line what changes, as the plain-words rules say, then keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again. The question's last option hands the question to the team: when they pick it, run node ${self} hand - with the same card on standard input (add --to <name> when they say who should answer), say in one line where it was written and that the team's To do (할 일) now offers it, and leave the part of the work that hangs on it untouched: finish the rest, say what was left out and that it waits on this thing to decide, and neither build it provisionally nor assume an answer.`;
+    const card = `Before you change anything for a request, find what it leaves open that the person or their team would want to answer, not you: who receives or sees something, what customers are shown, sent or charged, what it costs or adds to run, what is kept or dropped, what someone else must do. Stop before the first change and put it to the person as a card only when it is hard to undo once built (what is stored, sent or deleted, a database's structure, money, what customers are shown) or costs money to run; choose the rest yourself, build it, and put it in the bundle at the end of the work (decisions/2026-11-11-ai-choices-as-cards-at-end-of-work.md in beaket/beaket). A choice only about how the code is written, which nobody outside the code would notice, is yours: make it and go on. When the person must choose something that changes what gets built or written (two or more options, or a recommendation they take or turn down), put it to them as a card that a teammate who was not in this conversation can read, a person on the business side included, in the person's language. One choice per card; two choices are two cards. No file names, spec claim IDs, table, function or tool names: say what the thing does ("the server's database", not "D1 rows"). Name each option by what it does, never "the middle one" or "option 2". Draw it with the plugin's script, run alone, never chained: node ${self} card - --ask, with the card on standard input through a quoted heredoc (<<'CARD'), one part per line, in the person's language, never as JSON, whose braces Claude Code asks about every time: "title: " the decision to make, in one line, asked as a question; "happened: " what happened, in two to four plain sentences, on one line; "question: " the choice, as one question; for each of two to four options, "option: " what it does, then a line "+ " for each thing it gets and "- " for each thing it costs; "recommend: " the name of the option you recommend, as written on its option line; "why: " why; and "open: " for each thing that stays open whichever is chosen, when there is something. The script draws every card the same way, marks the recommendation as yours and adds the last line saying that the answer is kept as a team decision; it refuses a card that breaks these rules and says why, so fix the words and run it again. It prints JSON; when it has "notes", read them first, draw the card again if a note names what you meant, and never show the notes to the person. Put its "card" in your message exactly as printed, the code block marked diff included, which colors gains and costs in the person's own theme, and right after it call AskUserQuestion with its "questions" exactly as printed, which shows each option's gains and costs beside the options while the person moves through them with the arrow keys. Where no tool to ask a question with options is available, run it without --ask and put what it prints in a fenced code block. An answer that selects no option (notes only) is not a choice: answer what the notes say and put the question again. A question that only clarifies the request (which file, which branch), a go-ahead, a correction of your work or a question of fact is not a card. Answering the card with a choice is the consent to keep it: say in one line what changes, as the plain-words rules say, then keep it at once with the decision-record skill, from the card and the answer (the option chosen without its recommendation mark, and the notes they added as their words), with no offer and no draft to confirm, and say in one line where it was written and that it was shared. If they answer with a question, answer it and put the card again. The question's last option hands the question to the team: when they pick it, run node ${self} hand - with the same card on standard input (add --to <name> when they say who should answer), say in one line where it was written and that the team's To do (할 일) now offers it, and leave the part of the work that hangs on it untouched: finish the rest, say what was left out and that it waits on this thing to decide, and neither build it provisionally nor assume an answer.`;
     const share = `To share a new record: node ${self} push <file>.`;
     if (list.length === 0) {
       const text = [`This machine is in a Beaket team with no decision records yet${note}.`, card, share].join("\n");
